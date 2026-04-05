@@ -82,30 +82,16 @@ export async function GET(
         // Save enhanced image
         const enhancedUrl = await saveToProcessedBucket(outputUrl, `${id}_enhanced`)
 
-        // Fetch latest version of Grounded SAM dynamically
-        const samModel = await replicate.models.get('adirik', 'grounded-sam')
-        const samVersion = samModel.latest_version?.id
-        if (!samVersion) throw new Error('Could not get latest version of grounded-sam')
-
-        // Start SAM prediction
-        const samPrediction = await replicate.predictions.create({
-          version: samVersion,
-          input: {
-            image: enhancedUrl,
-            prompt: CLUTTER_PROMPT,
-            box_threshold: 0.3,
-            text_threshold: 0.25,
-          },
-        })
-
+        // MVP fase 1: enhancement only — marca como done direto
+        // Declutter (SAM + inpainting) será adicionado na próxima fase
         await supabaseServer.from('jobs').update({
           enhanced_url: enhancedUrl,
-          status: 'decluttering',
-          replicate_id_sam: samPrediction.id,
+          decluttered_url: enhancedUrl,
+          status: 'done',
           updated_at: new Date().toISOString(),
         }).eq('id', id)
 
-        return Response.json({ ...job, status: 'decluttering', enhanced_url: enhancedUrl })
+        return Response.json({ ...job, status: 'done', enhanced_url: enhancedUrl, decluttered_url: enhancedUrl })
       }
 
       // Still processing
