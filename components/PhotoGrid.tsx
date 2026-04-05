@@ -14,11 +14,13 @@ interface PhotoGridProps {
 export default function PhotoGrid({ jobs, onJobsUpdate }: PhotoGridProps) {
   const [processingAll, setProcessingAll] = useState(false)
   const [downloadingAll, setDownloadingAll] = useState(false)
+  const [processingIds, setProcessingIds] = useState<Set<string>>(new Set())
 
   const pendingJobs = jobs.filter((j) => j.status === 'pending' || j.status === 'error')
   const doneJobs = jobs.filter((j) => j.status === 'done')
 
   const handleProcess = async (jobId: string) => {
+    setProcessingIds((prev) => new Set(prev).add(jobId))
     try {
       const response = await fetch(`/api/jobs/${jobId}/process`, {
         method: 'POST',
@@ -26,10 +28,18 @@ export default function PhotoGrid({ jobs, onJobsUpdate }: PhotoGridProps) {
       if (!response.ok) {
         const err = await response.json()
         console.error('Process error:', err)
+        alert(`Erro ao processar: ${err.error || 'Erro desconhecido'}`)
       }
       onJobsUpdate()
     } catch (err) {
       console.error('Failed to start processing:', err)
+      alert('Falha ao conectar com o servidor.')
+    } finally {
+      setProcessingIds((prev) => {
+        const next = new Set(prev)
+        next.delete(jobId)
+        return next
+      })
     }
   }
 
@@ -139,7 +149,7 @@ export default function PhotoGrid({ jobs, onJobsUpdate }: PhotoGridProps) {
       {/* Grid */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
         {jobs.map((job) => (
-          <PhotoCard key={job.id} job={job} onProcess={handleProcess} />
+          <PhotoCard key={job.id} job={job} onProcess={handleProcess} isStarting={processingIds.has(job.id)} />
         ))}
       </div>
     </div>

@@ -84,7 +84,7 @@ export async function GET(
 
         // Start SAM prediction
         const samPrediction = await replicate.predictions.create({
-          version: SAM_VERSION,
+          model: 'adirik/grounded-sam',
           input: {
             image: enhancedUrl,
             prompt: CLUTTER_PROMPT,
@@ -180,7 +180,7 @@ export async function GET(
 
           // Start inpainting
           const inpaintPrediction = await replicate.predictions.create({
-            version: INPAINT_VERSION,
+            model: 'stability-ai/stable-diffusion-inpainting',
             input: {
               image: job.enhanced_url,
               mask: maskUrl,

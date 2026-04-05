@@ -35,9 +35,9 @@ export async function POST(
       return Response.json({ error: 'Failed to get signed URL' }, { status: 500 })
     }
 
-    // Start enhancement prediction
+    // Start enhancement prediction (using model name, no version hash needed)
     const enhancePrediction = await replicate.predictions.create({
-      version: ENHANCE_VERSION,
+      model: 'philz1337x/clarity-upscaler',
       input: {
         image: signedUrlData.signedUrl,
         scale_factor: 2,

@@ -11,6 +11,7 @@ import { Job } from '@/lib/supabase'
 interface PhotoCardProps {
   job: Job
   onProcess: (jobId: string) => void
+  isStarting?: boolean
 }
 
 function StatusBadge({ status }: { status: Job['status'] }) {
@@ -46,7 +47,7 @@ function StatusBadge({ status }: { status: Job['status'] }) {
   }
 }
 
-export default function PhotoCard({ job, onProcess }: PhotoCardProps) {
+export default function PhotoCard({ job, onProcess, isStarting }: PhotoCardProps) {
   const [showOriginal, setShowOriginal] = useState(false)
 
   const displayName = job.original_filename
@@ -140,10 +141,20 @@ export default function PhotoCard({ job, onProcess }: PhotoCardProps) {
             <Button
               size="sm"
               onClick={() => onProcess(job.id)}
-              className="flex-1 bg-blue-600 hover:bg-blue-700 text-white"
+              disabled={isStarting}
+              className="flex-1 bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-60"
             >
-              <Play className="w-3 h-3 mr-1" />
-              Processar
+              {isStarting ? (
+                <>
+                  <div className="w-3 h-3 mr-1 border border-white border-t-transparent rounded-full animate-spin" />
+                  Iniciando...
+                </>
+              ) : (
+                <>
+                  <Play className="w-3 h-3 mr-1" />
+                  Processar
+                </>
+              )}
             </Button>
           )}
 
