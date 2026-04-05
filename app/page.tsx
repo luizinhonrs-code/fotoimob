@@ -15,7 +15,28 @@ export default function Home() {
       const response = await fetch('/api/jobs')
       if (response.ok) {
         const data = await response.json()
-        setJobs(data.jobs || [])
+        const allJobs: Job[] = data.jobs || []
+        setJobs(allJobs)
+
+        // For active jobs, call status endpoint to advance the pipeline
+        const activeJobs = allJobs.filter(
+          (j) => j.status === 'enhancing' || j.status === 'decluttering'
+        )
+
+        if (activeJobs.length > 0) {
+          await Promise.all(
+            activeJobs.map((job) =>
+              fetch(`/api/jobs/${job.id}/status`).catch(console.error)
+            )
+          )
+
+          // Refresh list to get updated statuses after pipeline advancement
+          const refreshResponse = await fetch('/api/jobs')
+          if (refreshResponse.ok) {
+            const refreshData = await refreshResponse.json()
+            setJobs(refreshData.jobs || [])
+          }
+        }
       }
     } catch (err) {
       console.error('Failed to fetch jobs:', err)
