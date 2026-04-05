@@ -23,13 +23,13 @@ function StatusBadge({ status }: { status: Job['status'] }) {
     case 'enhancing':
       return (
         <Badge className="bg-blue-500/20 text-blue-300 border border-blue-500/40 animate-pulse">
-          Melhorando...
+          Detectando bagunça...
         </Badge>
       )
     case 'decluttering':
       return (
         <Badge className="bg-purple-500/20 text-purple-300 border border-purple-500/40 animate-pulse">
-          Removendo bagunca...
+          Removendo bagunça...
         </Badge>
       )
     case 'done':
