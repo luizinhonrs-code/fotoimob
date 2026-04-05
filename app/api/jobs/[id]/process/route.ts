@@ -11,7 +11,7 @@ import {
 
 export const runtime = 'nodejs'
 // Allow long-running processing (up to 10 minutes)
-export const maxDuration = 600
+export const maxDuration = 300
 
 async function updateJob(jobId: string, updates: Record<string, unknown>) {
   const { error } = await supabaseServer
