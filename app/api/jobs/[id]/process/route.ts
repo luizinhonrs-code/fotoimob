@@ -35,15 +35,19 @@ export async function POST(
       return Response.json({ error: 'Failed to get signed URL' }, { status: 500 })
     }
 
-    // Start enhancement prediction (using model name, no version hash needed)
+    // Fetch latest version of the enhancement model dynamically
+    const enhanceModel = await replicate.models.get('nightmareai', 'real-esrgan')
+    const enhanceVersion = enhanceModel.latest_version?.id
+    if (!enhanceVersion) throw new Error('Could not get latest version of real-esrgan')
+
+    // Start enhancement prediction
     const enhancePrediction = await replicate.predictions.create({
-      model: 'philz1337x/clarity-upscaler',
+      version: enhanceVersion,
       input: {
         image: signedUrlData.signedUrl,
         scale_factor: 2,
-        sharpen: 0.2,
-        creativity: 0.35,
-        resemblance: 0.6,
+        face_enhance: false,
+        model: 'RealESRGAN_x4plus',
       },
     })
 

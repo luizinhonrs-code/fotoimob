@@ -82,9 +82,14 @@ export async function GET(
         // Save enhanced image
         const enhancedUrl = await saveToProcessedBucket(outputUrl, `${id}_enhanced`)
 
+        // Fetch latest version of Grounded SAM dynamically
+        const samModel = await replicate.models.get('adirik', 'grounded-sam')
+        const samVersion = samModel.latest_version?.id
+        if (!samVersion) throw new Error('Could not get latest version of grounded-sam')
+
         // Start SAM prediction
         const samPrediction = await replicate.predictions.create({
-          model: 'adirik/grounded-sam',
+          version: samVersion,
           input: {
             image: enhancedUrl,
             prompt: CLUTTER_PROMPT,
@@ -178,9 +183,14 @@ export async function GET(
         if (hasMask) {
           const maskUrl = (samPrediction.output as { mask: string }).mask
 
+          // Fetch latest version of inpainting model dynamically
+          const inpaintModel = await replicate.models.get('stability-ai', 'stable-diffusion-inpainting')
+          const inpaintVersion = inpaintModel.latest_version?.id
+          if (!inpaintVersion) throw new Error('Could not get latest version of stable-diffusion-inpainting')
+
           // Start inpainting
           const inpaintPrediction = await replicate.predictions.create({
-            model: 'stability-ai/stable-diffusion-inpainting',
+            version: inpaintVersion,
             input: {
               image: job.enhanced_url,
               mask: maskUrl,
