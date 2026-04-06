@@ -65,10 +65,13 @@ export async function POST(
     const prediction = await replicate.predictions.create({
       version: samVersion,
       input: {
-        media: imageUrl,
+        input_video: imageUrl,
         click_coordinates: `[${pixelX},${pixelY}]`,
         click_labels: '1',
         click_frames: '0',
+        mask_type: 'binary',
+        output_video: false,
+        output_format: 'png',
       },
     })
 
