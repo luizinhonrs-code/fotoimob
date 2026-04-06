@@ -17,7 +17,7 @@ export type Job = {
   original_url: string
   enhanced_url: string | null
   decluttered_url: string | null
-  status: 'pending' | 'enhancing' | 'decluttering' | 'done' | 'error'
+  status: 'pending' | 'enhancing' | 'decluttering' | 'polishing' | 'done' | 'error'
   replicate_id_enhance: string | null
   replicate_id_sam: string | null
   replicate_id_inpaint: string | null

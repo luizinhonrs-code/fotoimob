@@ -149,7 +149,7 @@ export default function PhotoGrid({ jobs, onJobsUpdate }: PhotoGridProps) {
       {/* Grid */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
         {jobs.map((job) => (
-          <PhotoCard key={job.id} job={job} onProcess={handleProcess} isStarting={processingIds.has(job.id)} />
+          <PhotoCard key={job.id} job={job} onProcess={handleProcess} onJobsUpdate={onJobsUpdate} isStarting={processingIds.has(job.id)} />
         ))}
       </div>
     </div>

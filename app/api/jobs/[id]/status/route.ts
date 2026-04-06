@@ -21,6 +21,28 @@ async function saveToProcessedBucket(imageUrl: string, filename: string): Promis
   return urlData.publicUrl
 }
 
+async function startEnhancement(imageUrl: string, jobId: string): Promise<string | null> {
+  try {
+    const model = await replicate.models.get('philz1337x', 'clarity-upscaler')
+    const version = model.latest_version?.id
+    if (!version) return null
+
+    const prediction = await replicate.predictions.create({
+      version,
+      input: {
+        image: imageUrl,
+        scale_factor: 2,
+        creativity: 0.35,
+        resemblance: 0.6,
+        dynamic: 6,
+      },
+    })
+    return prediction.id
+  } catch {
+    return null
+  }
+}
+
 export async function GET(
   _request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -43,18 +65,16 @@ export async function GET(
       return Response.json(job)
     }
 
-    // Detecting stage (enhancing) — DINO is running synchronously in process route
-    // This state is brief; if we're here, process route is still running or just finished
+    // Detecting stage — DINO running synchronously in process route
     if (job.status === 'enhancing') {
       return Response.json(job)
     }
 
-    // Removing stage (decluttering) — LaMa is running
+    // Removing stage — inpainting model running
     if (job.status === 'decluttering' && job.replicate_id_inpaint) {
-      const lamaPrediction = await replicate.predictions.get(job.replicate_id_inpaint)
+      const inpaintPrediction = await replicate.predictions.get(job.replicate_id_inpaint)
 
-      if (lamaPrediction.status === 'failed' || lamaPrediction.status === 'canceled') {
-        // LaMa failed - get original signed URL as fallback
+      if (inpaintPrediction.status === 'failed' || inpaintPrediction.status === 'canceled') {
         const { data: signedUrlData } = await supabaseServer.storage
           .from('originals')
           .createSignedUrl(job.original_filename, 3600)
@@ -75,14 +95,71 @@ export async function GET(
         return Response.json({ ...job, status: 'done', decluttered_url: fallbackUrl })
       }
 
-      if (lamaPrediction.status === 'succeeded') {
+      if (inpaintPrediction.status === 'succeeded') {
         let outputUrl: string
-        if (Array.isArray(lamaPrediction.output)) {
-          outputUrl = lamaPrediction.output[0]
-        } else if (typeof lamaPrediction.output === 'string') {
-          outputUrl = lamaPrediction.output
+        if (Array.isArray(inpaintPrediction.output)) {
+          outputUrl = inpaintPrediction.output[0]
+        } else if (typeof inpaintPrediction.output === 'string') {
+          outputUrl = inpaintPrediction.output
         } else {
           outputUrl = job.original_url
+        }
+
+        // Save inpainted result
+        const inpaintedUrl = await saveToProcessedBucket(outputUrl, `${id}_inpainted`)
+
+        // Try to start quality enhancement
+        const enhanceId = await startEnhancement(inpaintedUrl, id)
+
+        if (enhanceId) {
+          await supabaseServer.from('jobs').update({
+            decluttered_url: inpaintedUrl, // fallback if enhancement fails
+            status: 'polishing',
+            replicate_id_enhance: enhanceId,
+            updated_at: new Date().toISOString(),
+          }).eq('id', id)
+          return Response.json({ ...job, status: 'polishing', decluttered_url: inpaintedUrl })
+        }
+
+        // Enhancement unavailable — mark done with inpainted result
+        await supabaseServer.from('jobs').update({
+          decluttered_url: inpaintedUrl,
+          status: 'done',
+          updated_at: new Date().toISOString(),
+        }).eq('id', id)
+        return Response.json({ ...job, status: 'done', decluttered_url: inpaintedUrl })
+      }
+
+      // Still running
+      return Response.json(job)
+    }
+
+    // Polishing stage — quality enhancement running
+    if (job.status === 'polishing' && job.replicate_id_enhance) {
+      const enhancePrediction = await replicate.predictions.get(job.replicate_id_enhance)
+
+      if (enhancePrediction.status === 'failed' || enhancePrediction.status === 'canceled') {
+        // Enhancement failed — keep inpainted result (already in decluttered_url)
+        await supabaseServer.from('jobs').update({
+          status: 'done',
+          updated_at: new Date().toISOString(),
+        }).eq('id', id)
+        return Response.json({ ...job, status: 'done' })
+      }
+
+      if (enhancePrediction.status === 'succeeded') {
+        let outputUrl: string
+        if (Array.isArray(enhancePrediction.output)) {
+          outputUrl = enhancePrediction.output[0]
+        } else if (typeof enhancePrediction.output === 'string') {
+          outputUrl = enhancePrediction.output
+        } else {
+          // No output — keep inpainted result
+          await supabaseServer.from('jobs').update({
+            status: 'done',
+            updated_at: new Date().toISOString(),
+          }).eq('id', id)
+          return Response.json({ ...job, status: 'done' })
         }
 
         const finalUrl = await saveToProcessedBucket(outputUrl, `${id}_final`)
