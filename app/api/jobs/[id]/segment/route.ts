@@ -6,8 +6,8 @@ import sharp from 'sharp'
 export const runtime = 'nodejs'
 export const maxDuration = 60
 
-// Keep prompt short — DINO parser breaks with too many tokens
-const DETECT_PROMPT = 'object . furniture . bag . clothing . bottle . cup . box . cable . book . toy . trash . shoe'
+// Note: avoid reserved words like "object" — causes NoneType in DINO tokenizer
+const DETECT_PROMPT = 'bottle . cup . bag . clothing . shoe . toy . trash . box . cable . book . chair . lamp'
 
 async function pollUntilDone(predictionId: string, maxMs = 50000) {
   const start = Date.now()
