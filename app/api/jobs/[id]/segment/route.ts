@@ -6,9 +6,6 @@ import sharp from 'sharp'
 export const runtime = 'nodejs'
 export const maxDuration = 60
 
-// Broad prompt — avoid reserved words like "object", avoid multi-word phrases
-const SAM_PROMPT = 'bag . bottle . cup . clothing . shoe . toy . trash . box . cable . book . chair . lamp . table . sofa . rug . pillow . plant . basket . keyboard . mouse . phone . remote'
-
 async function pollUntilDone(predictionId: string, maxMs = 55000) {
   const start = Date.now()
   while (Date.now() - start < maxMs) {
@@ -45,7 +42,7 @@ export async function POST(
       imageUrl = sd.signedUrl
     }
 
-    // Get image dimensions to map click → image pixel coords
+    // Get image dimensions
     const imgRes = await fetch(imageUrl)
     const imgBuf = Buffer.from(await imgRes.arrayBuffer())
     const meta = await sharp(imgBuf).metadata()
@@ -55,22 +52,29 @@ export async function POST(
     const pixelX = Math.round((clickX / canvasWidth) * imgWidth)
     const pixelY = Math.round((clickY / canvasHeight) * imgHeight)
 
-    // Run grounded_sam — returns one PNG mask per detected object
-    const samModel = await replicate.models.get('schananas', 'grounded_sam')
+    // Use meta/sam-2 — automatic segmentation, no text prompt needed.
+    // Returns individual_masks: one PNG per detected object in the scene.
+    const samModel = await replicate.models.get('meta', 'sam-2')
     const samVersion = samModel.latest_version?.id
-    if (!samVersion) throw new Error('Could not get grounded_sam model version')
+    if (!samVersion) throw new Error('Could not get sam-2 model version')
 
     const pred = await replicate.predictions.create({
       version: samVersion,
       input: {
         image: imageUrl,
-        mask_prompt: SAM_PROMPT,
+        points_per_side: 32,        // grid density — higher = more objects detected
+        pred_iou_thresh: 0.80,      // lower = include more objects
+        stability_score_thresh: 0.85,
+        use_m2m: true,
       },
     })
 
     const result = await pollUntilDone(pred.id)
 
-    const maskUrls: string[] = Array.isArray(result.output) ? result.output : []
+    // individual_masks is array of URIs, one per object
+    const output = result.output as { individual_masks?: string[]; combined_mask?: string }
+    const maskUrls: string[] = output?.individual_masks ?? []
+
     if (maskUrls.length === 0) {
       return Response.json(
         { error: 'Nenhum objeto detectado. Use o modo Pincel para marcar manualmente.' },
@@ -78,12 +82,11 @@ export async function POST(
       )
     }
 
-    // Download all masks, find which one covers the click point
+    // Download all masks concurrently, resize to image res for pixel lookup
     const masks = await Promise.all(
       maskUrls.map(async (url) => {
         const r = await fetch(url)
         const buf = Buffer.from(await r.arrayBuffer())
-        // Resize to image dimensions for pixel lookup
         const resized = await sharp(buf)
           .resize(imgWidth, imgHeight, { fit: 'fill' })
           .greyscale()
@@ -93,28 +96,30 @@ export async function POST(
       })
     )
 
-    // Find the mask where the click pixel is white (object pixel)
-    const bytesPerPixel = 1 // greyscale raw
-    const clickIdx = (pixelY * imgWidth + pixelX) * bytesPerPixel
+    // Find smallest mask that covers the click pixel
+    const clickIdx = pixelY * imgWidth + pixelX
     let bestMaskBuf: Buffer | null = null
+    let bestArea = Infinity
 
     for (const { buf, resized } of masks) {
       if (resized[clickIdx] > 128) {
-        bestMaskBuf = buf
-        break
+        // Count white pixels (object area) — prefer smallest (most specific)
+        let area = 0
+        for (let i = 0; i < resized.length; i++) {
+          if (resized[i] > 128) area++
+        }
+        if (area < bestArea) { bestArea = area; bestMaskBuf = buf }
       }
     }
 
-    // Fallback: pick the mask whose centroid is closest to the click
+    // Fallback: closest centroid to click
     if (!bestMaskBuf) {
       let bestDist = Infinity
       for (const { buf, resized } of masks) {
         let sumX = 0, sumY = 0, count = 0
         for (let y = 0; y < imgHeight; y++) {
           for (let x = 0; x < imgWidth; x++) {
-            if (resized[y * imgWidth + x] > 128) {
-              sumX += x; sumY += y; count++
-            }
+            if (resized[y * imgWidth + x] > 128) { sumX += x; sumY += y; count++ }
           }
         }
         if (count > 0) {
@@ -128,7 +133,7 @@ export async function POST(
       return Response.json({ error: 'Não foi possível identificar o objeto.' }, { status: 422 })
     }
 
-    // Resize winning mask to canvas dimensions for overlay
+    // Resize winning mask to canvas size for overlay
     const canvasMask = await sharp(bestMaskBuf)
       .resize(canvasWidth, canvasHeight, { fit: 'fill' })
       .greyscale()
