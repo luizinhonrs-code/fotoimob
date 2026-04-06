@@ -8,8 +8,6 @@ export const maxDuration = 60
 
 const CLUTTER_PROMPT = 'bottle . bag . handbag . cup . dish . bowl . cosmetics . toiletries . personal care product . clothing . shoe . sock . toy . trash . clutter . laundry . towel on floor'
 
-// LaMa inpainting - version fetched dynamically
-
 async function pollPredictionSync(predictionId: string, maxWaitMs = 45000): Promise<any> {
   const start = Date.now()
   while (Date.now() - start < maxWaitMs) {
@@ -104,8 +102,8 @@ export async function POST(
       input: {
         image: originalSignedUrl,
         query: CLUTTER_PROMPT,
-        box_threshold: 0.3,
-        text_threshold: 0.25,
+        box_threshold: 0.2,
+        text_threshold: 0.2,
       },
     })
 
@@ -161,26 +159,25 @@ export async function POST(
     const { data: maskUrlData } = supabaseServer.storage.from('processed').getPublicUrl(maskPath)
     const maskPublicUrl = maskUrlData.publicUrl
 
-    // Step 3: Start LaMa inpainting — fetch latest version dynamically
+    // Step 3: Start Flux Fill Pro inpainting
     const { data: freshSignedUrl } = await supabaseServer.storage
       .from('originals')
       .createSignedUrl(job.original_filename, 3600)
 
-    const lamaModel = await replicate.models.get('zylim0702', 'remove-object')
-    const lamaVersion = lamaModel.latest_version?.id
-    if (!lamaVersion) throw new Error('Could not get latest version of zylim0702/remove-object')
-
-    const lamaPrediction = await replicate.predictions.create({
-      version: lamaVersion,
+    const fluxPrediction = await replicate.predictions.create({
+      model: 'black-forest-labs/flux-fill-pro',
       input: {
         image: freshSignedUrl?.signedUrl || originalSignedUrl,
         mask: maskPublicUrl,
+        prompt: 'clean empty room, natural lighting, same wall and floor texture, professional real estate photo, no personal items, no clutter',
+        output_format: 'jpg',
+        output_quality: 90,
       },
     })
 
     await supabaseServer.from('jobs').update({
       status: 'decluttering',
-      replicate_id_inpaint: lamaPrediction.id,
+      replicate_id_inpaint: fluxPrediction.id,
       updated_at: new Date().toISOString(),
     }).eq('id', id)
 
