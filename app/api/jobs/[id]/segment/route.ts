@@ -85,23 +85,56 @@ export async function POST(
       .raw()
       .toBuffer({ resolveWithObject: true })
 
-    const ch = info.channels // should be 3 (RGB)
-    const clickPosIdx = (pixelY * imgWidth + pixelX) * ch
-    const cr = rawData[clickPosIdx]
-    const cg = rawData[clickPosIdx + 1]
-    const cb = rawData[clickPosIdx + 2]
+    const ch = info.channels // 3 (RGB)
 
-    // Build strict B&W binary mask:
-    // SAM assigns a unique color per segment — use very tight tolerance
-    // so we don't accidentally match neighboring segments with similar hues
-    const colorTolerance = 8
+    // Find the segment color at click point.
+    // SAM has 1-2px black borders between segments — search in a spiral
+    // radius up to 8px to find the nearest non-black pixel.
+    let cr = 0, cg = 0, cb = 0
+    let found = false
+    outer: for (let radius = 0; radius <= 8; radius++) {
+      for (let dy = -radius; dy <= radius; dy++) {
+        for (let dx = -radius; dx <= radius; dx++) {
+          if (Math.abs(dx) !== radius && Math.abs(dy) !== radius) continue
+          const nx = Math.min(imgWidth - 1, Math.max(0, pixelX + dx))
+          const ny = Math.min(imgHeight - 1, Math.max(0, pixelY + dy))
+          const pi = (ny * imgWidth + nx) * ch
+          const r = rawData[pi], g = rawData[pi + 1], b = rawData[pi + 2]
+          if (r > 20 || g > 20 || b > 20) { // non-black = a segment
+            cr = r; cg = g; cb = b; found = true; break outer
+          }
+        }
+      }
+    }
+
+    if (!found) {
+      return Response.json(
+        { error: 'Nenhum objeto detectado nesse ponto. Tente clicar no centro do objeto.' },
+        { status: 422 }
+      )
+    }
+
+    // Tight tolerance — SAM segment colors are unique, no need for > 12
+    const colorTolerance = 12
     const binaryData = Buffer.alloc(imgWidth * imgHeight)
+    let whiteCount = 0
     for (let i = 0; i < imgWidth * imgHeight; i++) {
       const pi = i * ch
       const dr = rawData[pi] - cr
       const dg = rawData[pi + 1] - cg
       const db = rawData[pi + 2] - cb
-      binaryData[i] = Math.sqrt(dr * dr + dg * dg + db * db) < colorTolerance ? 255 : 0
+      if (Math.sqrt(dr * dr + dg * dg + db * db) < colorTolerance) {
+        binaryData[i] = 255; whiteCount++
+      } else {
+        binaryData[i] = 0
+      }
+    }
+
+    if (whiteCount < 50) {
+      return Response.json(
+        { error: 'Seleção muito pequena. Clique no centro do objeto.' },
+        { status: 422 }
+      )
     }
 
     // Convert to PNG and resize to canvas dimensions for overlay
