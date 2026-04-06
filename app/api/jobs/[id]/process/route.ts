@@ -26,8 +26,8 @@ async function pollPredictionSync(predictionId: string, maxWaitMs = 45000): Prom
 
 async function createMaskFromBoxes(
   imageUrl: string,
-  boxes: number[][], // normalized [0-1] coordinates [[x1, y1, x2, y2], ...]
-  padding = 15 // extra pixels around each box
+  boxes: number[][], // PIXEL coordinates [[x1, y1, x2, y2], ...]
+  padding = 20 // extra pixels around each box for better coverage
 ): Promise<Buffer> {
   // Get image dimensions
   const response = await fetch(imageUrl)
@@ -37,12 +37,12 @@ async function createMaskFromBoxes(
   const width = metadata.width || 1024
   const height = metadata.height || 768
 
-  // Create SVG with white rectangles for each detected box
+  // Create SVG with white rectangles for each detected box (pixel coords directly)
   const rectSvgs = boxes.map(([x1, y1, x2, y2]) => {
-    const px1 = Math.max(0, Math.round(x1 * width) - padding)
-    const py1 = Math.max(0, Math.round(y1 * height) - padding)
-    const px2 = Math.min(width, Math.round(x2 * width) + padding)
-    const py2 = Math.min(height, Math.round(y2 * height) + padding)
+    const px1 = Math.max(0, x1 - padding)
+    const py1 = Math.max(0, y1 - padding)
+    const px2 = Math.min(width, x2 + padding)
+    const py2 = Math.min(height, y2 + padding)
     const w = px2 - px1
     const h = py2 - py1
     return `<rect x="${px1}" y="${py1}" width="${w}" height="${h}" fill="white" rx="4" ry="4"/>`
@@ -119,42 +119,16 @@ export async function POST(
     const dinoResult = await pollPredictionSync(dinoPrediction.id, 45000)
 
     // Parse bounding boxes from DINO output
-    // Log raw output to understand format
-    console.log('DINO raw output type:', typeof dinoResult.output)
-    console.log('DINO raw output:', JSON.stringify(dinoResult.output)?.slice(0, 500))
-
+    // Format: { detections: [{ bbox: [x1, y1, x2, y2], confidence, label }] }
+    // Coordinates are in PIXELS (not normalized)
     let boxes: number[][] = []
-    const dinoOutput = dinoResult.output
+    const dinoOutput = dinoResult.output as { detections?: Array<{ bbox: number[], confidence: number, label: string }> }
 
-    if (typeof dinoOutput === 'string') {
-      // Output might be a URL to a JSON file or an image URL
-      if (dinoOutput.startsWith('http') && dinoOutput.includes('.json')) {
-        // Fetch JSON file
-        const jsonResp = await fetch(dinoOutput)
-        const jsonData = await jsonResp.json()
-        console.log('DINO JSON file contents:', JSON.stringify(jsonData)?.slice(0, 500))
-        if (Array.isArray(jsonData?.boxes)) boxes = jsonData.boxes
-      }
-    } else if (Array.isArray(dinoOutput)) {
-      // Output might be [image_url, json_url] or [boxes_array]
-      console.log('DINO output is array, length:', dinoOutput.length)
-      for (const item of dinoOutput) {
-        if (typeof item === 'string' && item.includes('.json')) {
-          const jsonResp = await fetch(item)
-          const jsonData = await jsonResp.json()
-          if (Array.isArray(jsonData?.boxes)) boxes = jsonData.boxes
-        } else if (Array.isArray(item) && Array.isArray(item[0])) {
-          boxes = item
-        }
-      }
-    } else if (dinoOutput && typeof dinoOutput === 'object') {
-      if ('boxes' in dinoOutput && Array.isArray((dinoOutput as {boxes: number[][]}).boxes)) {
-        boxes = (dinoOutput as {boxes: number[][]}).boxes
-      }
+    if (dinoOutput?.detections && Array.isArray(dinoOutput.detections)) {
+      boxes = dinoOutput.detections.map(d => d.bbox)
     }
 
-    console.log('DINO parsed boxes count:', boxes.length)
-    if (boxes.length > 0) console.log('First box:', boxes[0])
+    console.log(`DINO found ${boxes.length} objects to remove`)
 
     if (boxes.length === 0) {
       // No clutter detected - use original as final
