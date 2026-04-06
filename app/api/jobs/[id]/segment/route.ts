@@ -12,11 +12,22 @@ async function pollUntilDone(predictionId: string, maxMs = 55000) {
     const p = await replicate.predictions.get(predictionId)
     if (p.status === 'succeeded') return p
     if (p.status === 'failed' || p.status === 'canceled') {
-      throw new Error(`Segmentation ${p.status}: ${p.error ?? 'unknown error'}`)
+      throw new Error(`SAM ${p.status}: ${p.error ?? 'unknown'}`)
     }
     await new Promise(r => setTimeout(r, 1500))
   }
-  throw new Error('Segmentation timed out')
+  throw new Error('SAM timed out')
+}
+
+// Download one mask, resize to image dims, return raw greyscale buffer
+async function fetchMaskRaw(url: string, w: number, h: number): Promise<Buffer> {
+  const r = await fetch(url)
+  const buf = Buffer.from(await r.arrayBuffer())
+  return sharp(buf)
+    .resize(w, h, { fit: 'fill' })
+    .greyscale()
+    .raw()
+    .toBuffer()
 }
 
 export async function POST(
@@ -41,21 +52,22 @@ export async function POST(
       imageUrl = sd.signedUrl
     }
 
-    // Get image dimensions
+    // Image dimensions
     const imgRes = await fetch(imageUrl)
     const imgBuf = Buffer.from(await imgRes.arrayBuffer())
     const meta = await sharp(imgBuf).metadata()
-    const imgWidth = meta.width!
-    const imgHeight = meta.height!
+    const imgW = meta.width!
+    const imgH = meta.height!
 
-    // Map canvas click → image pixel coords
-    const pixelX = Math.min(imgWidth - 1, Math.max(0, Math.round((clickX / canvasWidth) * imgWidth)))
-    const pixelY = Math.min(imgHeight - 1, Math.max(0, Math.round((clickY / canvasHeight) * imgHeight)))
+    // Map canvas click → image pixel
+    const px = Math.min(imgW - 1, Math.max(0, Math.round((clickX / canvasWidth) * imgW)))
+    const py = Math.min(imgH - 1, Math.max(0, Math.round((clickY / canvasHeight) * imgH)))
+    const clickIdx = py * imgW + px
 
-    // Run meta/sam-2 — automatic segmentation, returns combined_mask
+    // Run SAM-2
     const samModel = await replicate.models.get('meta', 'sam-2')
     const samVersion = samModel.latest_version?.id
-    if (!samVersion) throw new Error('Could not get sam-2 model version')
+    if (!samVersion) throw new Error('Could not get sam-2 version')
 
     const pred = await replicate.predictions.create({
       version: samVersion,
@@ -69,84 +81,71 @@ export async function POST(
     })
 
     const result = await pollUntilDone(pred.id)
+    const output = result.output as { individual_masks?: string[] }
+    const maskUrls: string[] = output?.individual_masks ?? []
 
-    const output = result.output as { combined_mask?: string; individual_masks?: string[] }
-    const combinedMaskUrl = output?.combined_mask
-    if (!combinedMaskUrl) throw new Error('No combined mask returned from SAM')
+    if (maskUrls.length === 0) {
+      return Response.json({ error: 'SAM não retornou masks. Tente novamente.' }, { status: 422 })
+    }
 
-    // Download combined_mask — each object has a unique color, background = black
-    const cmRes = await fetch(combinedMaskUrl)
-    const cmBuf = Buffer.from(await cmRes.arrayBuffer())
+    // Download masks in batches of 6, stop as soon as one covers the click.
+    // SAM returns masks roughly smallest→largest, so the clicked object
+    // is usually found in the first 30 masks.
+    const BATCH = 6
+    let bestMaskBuf: Buffer | null = null
+    let bestArea = Infinity
 
-    // Resize to image dimensions and get raw pixel data
-    const { data: rawData, info } = await sharp(cmBuf)
-      .resize(imgWidth, imgHeight, { fit: 'fill' })
-      .removeAlpha()
-      .raw()
-      .toBuffer({ resolveWithObject: true })
+    for (let i = 0; i < maskUrls.length; i += BATCH) {
+      const batch = maskUrls.slice(i, i + BATCH)
+      const raws = await Promise.all(batch.map(url => fetchMaskRaw(url, imgW, imgH)))
 
-    const ch = info.channels // 3 (RGB)
+      for (const raw of raws) {
+        if (raw[clickIdx] > 128) {
+          // Count pixels to pick the most specific (smallest) matching mask
+          let area = 0
+          for (let j = 0; j < raw.length; j++) if (raw[j] > 128) area++
+          if (area < bestArea) { bestArea = area; bestMaskBuf = raw }
+        }
+      }
 
-    // Find the segment color at click point.
-    // SAM has 1-2px black borders between segments — search in a spiral
-    // radius up to 8px to find the nearest non-black pixel.
-    let cr = 0, cg = 0, cb = 0
-    let found = false
-    outer: for (let radius = 0; radius <= 8; radius++) {
-      for (let dy = -radius; dy <= radius; dy++) {
-        for (let dx = -radius; dx <= radius; dx++) {
-          if (Math.abs(dx) !== radius && Math.abs(dy) !== radius) continue
-          const nx = Math.min(imgWidth - 1, Math.max(0, pixelX + dx))
-          const ny = Math.min(imgHeight - 1, Math.max(0, pixelY + dy))
-          const pi = (ny * imgWidth + nx) * ch
-          const r = rawData[pi], g = rawData[pi + 1], b = rawData[pi + 2]
-          if (r > 20 || g > 20 || b > 20) { // non-black = a segment
-            cr = r; cg = g; cb = b; found = true; break outer
-          }
+      // Stop once we have a hit and have checked one extra batch
+      if (bestMaskBuf && i >= BATCH) break
+    }
+
+    // Fallback: if no mask hit the click pixel, use closest centroid
+    if (!bestMaskBuf) {
+      const FALLBACK_LIMIT = Math.min(maskUrls.length, 30)
+      const raws = await Promise.all(
+        maskUrls.slice(0, FALLBACK_LIMIT).map(url => fetchMaskRaw(url, imgW, imgH))
+      )
+      let bestDist = Infinity
+      for (const raw of raws) {
+        let sx = 0, sy = 0, count = 0
+        for (let y = 0; y < imgH; y++)
+          for (let x = 0; x < imgW; x++)
+            if (raw[y * imgW + x] > 128) { sx += x; sy += y; count++ }
+        if (count > 0) {
+          const dist = Math.sqrt((sx / count - px) ** 2 + (sy / count - py) ** 2)
+          if (dist < bestDist) { bestDist = dist; bestMaskBuf = raw }
         }
       }
     }
 
-    if (!found) {
-      return Response.json(
-        { error: 'Nenhum objeto detectado nesse ponto. Tente clicar no centro do objeto.' },
-        { status: 422 }
-      )
+    if (!bestMaskBuf) {
+      return Response.json({ error: 'Nenhum objeto encontrado. Tente clicar no centro do objeto.' }, { status: 422 })
     }
 
-    // Tight tolerance — SAM segment colors are unique, no need for > 12
-    const colorTolerance = 12
-    const binaryData = Buffer.alloc(imgWidth * imgHeight)
-    let whiteCount = 0
-    for (let i = 0; i < imgWidth * imgHeight; i++) {
-      const pi = i * ch
-      const dr = rawData[pi] - cr
-      const dg = rawData[pi + 1] - cg
-      const db = rawData[pi + 2] - cb
-      if (Math.sqrt(dr * dr + dg * dg + db * db) < colorTolerance) {
-        binaryData[i] = 255; whiteCount++
-      } else {
-        binaryData[i] = 0
-      }
-    }
-
-    if (whiteCount < 50) {
-      return Response.json(
-        { error: 'Seleção muito pequena. Clique no centro do objeto.' },
-        { status: 422 }
-      )
-    }
-
-    // Convert to PNG and resize to canvas dimensions for overlay
-    const maskPng = await sharp(binaryData, {
-      raw: { width: imgWidth, height: imgHeight, channels: 1 },
+    // Resize winning mask to canvas size for overlay
+    const canvasMask = await sharp(bestMaskBuf, {
+      raw: { width: imgW, height: imgH, channels: 1 },
     })
       .resize(canvasWidth, canvasHeight, { fit: 'fill' })
+      .threshold(128)
       .png()
       .toBuffer()
 
     return Response.json({
-      mask: `data:image/png;base64,${maskPng.toString('base64')}`,
+      mask: `data:image/png;base64,${canvasMask.toString('base64')}`,
     })
   } catch (err) {
     console.error('Segment error:', err)
