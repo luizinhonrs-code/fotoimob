@@ -6,17 +6,21 @@ import sharp from 'sharp'
 export const runtime = 'nodejs'
 export const maxDuration = 60
 
+// Broad detection prompt to find anything the user might click on
+const DETECT_PROMPT =
+  'object . furniture . electronic . bag . clothing . bottle . cup . bowl . box . cable . remote control . book . toy . trash . basket . chair . table . lamp . plant . pillow . rug . shoe . clutter'
+
 async function pollUntilDone(predictionId: string, maxMs = 50000) {
   const start = Date.now()
   while (Date.now() - start < maxMs) {
     const p = await replicate.predictions.get(predictionId)
     if (p.status === 'succeeded') return p
     if (p.status === 'failed' || p.status === 'canceled') {
-      throw new Error(`Segmentation ${p.status}: ${p.error ?? 'unknown error'}`)
+      throw new Error(`Detection ${p.status}: ${p.error ?? 'unknown error'}`)
     }
     await new Promise(r => setTimeout(r, 1500))
   }
-  throw new Error('Segmentation timed out')
+  throw new Error('Detection timed out')
 }
 
 export async function POST(
@@ -28,10 +32,7 @@ export async function POST(
     const { clickX, clickY, canvasWidth, canvasHeight } = await request.json()
 
     const { data: job, error } = await supabaseServer
-      .from('jobs')
-      .select('*')
-      .eq('id', id)
-      .single()
+      .from('jobs').select('*').eq('id', id).single()
     if (error || !job) return Response.json({ error: 'Job not found' }, { status: 404 })
 
     // Source image URL
@@ -40,72 +41,106 @@ export async function POST(
       imageUrl = job.decluttered_url
     } else {
       const { data: sd } = await supabaseServer.storage
-        .from('originals')
-        .createSignedUrl(job.original_filename, 3600)
+        .from('originals').createSignedUrl(job.original_filename, 3600)
       if (!sd?.signedUrl) return Response.json({ error: 'Failed to get image URL' }, { status: 500 })
       imageUrl = sd.signedUrl
     }
 
-    // Get actual image dimensions
-    const imgResponse = await fetch(imageUrl)
-    const imgBuffer = Buffer.from(await imgResponse.arrayBuffer())
-    const meta = await sharp(imgBuffer).metadata()
+    // Image dimensions
+    const imgRes = await fetch(imageUrl)
+    const imgBuf = Buffer.from(await imgRes.arrayBuffer())
+    const meta = await sharp(imgBuf).metadata()
     const imgWidth = meta.width!
     const imgHeight = meta.height!
 
-    // Map canvas click → image pixel coordinates
-    const pixelX = Math.round((clickX / canvasWidth) * imgWidth)
-    const pixelY = Math.round((clickY / canvasHeight) * imgHeight)
+    // Map canvas click → image pixel coords
+    const px = (clickX / canvasWidth) * imgWidth
+    const py = (clickY / canvasHeight) * imgHeight
 
-    // Run SAM 2 (meta/sam-2-video supports click-point segmentation on images)
-    const samModel = await replicate.models.get('meta', 'sam-2-video')
-    const samVersion = samModel.latest_version?.id
-    if (!samVersion) throw new Error('Could not get sam-2-video model version')
+    // Run Grounding DINO
+    const dinoModel = await replicate.models.get('adirik', 'grounding-dino')
+    const dinoVersion = dinoModel.latest_version?.id
+    if (!dinoVersion) throw new Error('Could not get DINO model version')
 
-    const prediction = await replicate.predictions.create({
-      version: samVersion,
+    const dinoPred = await replicate.predictions.create({
+      version: dinoVersion,
       input: {
-        input_video: imageUrl,
-        click_coordinates: `[${pixelX},${pixelY}]`,
-        click_labels: '1',
-        click_frames: '0',
-        mask_type: 'binary',
-        output_video: false,
-        output_format: 'png',
+        image: imageUrl,
+        prompt: DETECT_PROMPT,
+        box_threshold: 0.25,
+        text_threshold: 0.25,
       },
     })
 
-    const result = await pollUntilDone(prediction.id)
+    const dinoResult = await pollUntilDone(dinoPred.id)
+    type Detection = { bbox: number[]; confidence: number; label: string }
+    const detections: Detection[] =
+      (dinoResult.output as { detections?: Detection[] })?.detections ?? []
 
-    // Output is array of mask URIs (one per detected object)
-    let maskUrl: string
-    if (Array.isArray(result.output) && result.output.length > 0) {
-      maskUrl = result.output[0]
-    } else if (typeof result.output === 'string') {
-      maskUrl = result.output
-    } else {
-      throw new Error('No mask returned from segmentation model')
+    if (detections.length === 0) {
+      return Response.json(
+        { error: 'Nenhum objeto detectado neste ponto. Use o modo Pincel para marcar manualmente.' },
+        { status: 422 }
+      )
     }
 
-    // Fetch mask, resize to canvas dimensions, return base64
-    const maskResponse = await fetch(maskUrl)
-    const maskRaw = Buffer.from(await maskResponse.arrayBuffer())
+    // Find smallest bbox that contains the click point
+    let best: Detection | null = null
+    let bestScore = Infinity
 
-    // Convert mask to strict black/white then resize to canvas size
-    const maskResized = await sharp(maskRaw)
+    for (const det of detections) {
+      const [x1, y1, x2, y2] = det.bbox
+      if (px >= x1 && px <= x2 && py >= y1 && py <= y2) {
+        const area = (x2 - x1) * (y2 - y1)
+        if (area < bestScore) { bestScore = area; best = det }
+      }
+    }
+
+    // Fallback: closest detection center to click point
+    if (!best) {
+      bestScore = Infinity
+      for (const det of detections) {
+        const [x1, y1, x2, y2] = det.bbox
+        const dist = Math.sqrt(((x1 + x2) / 2 - px) ** 2 + ((y1 + y2) / 2 - py) ** 2)
+        if (dist < bestScore) { bestScore = dist; best = det }
+      }
+    }
+
+    if (!best) {
+      return Response.json({ error: 'Nenhum objeto encontrado.' }, { status: 422 })
+    }
+
+    // Build binary mask at image resolution
+    const [x1, y1, x2, y2] = best.bbox
+    const bx = Math.max(0, Math.round(x1))
+    const by = Math.max(0, Math.round(y1))
+    const bw = Math.max(1, Math.round(x2 - x1))
+    const bh = Math.max(1, Math.round(y2 - y1))
+
+    const svgMask = `<svg width="${imgWidth}" height="${imgHeight}">` +
+      `<rect x="${bx}" y="${by}" width="${bw}" height="${bh}" fill="white"/></svg>`
+
+    const maskFull = await sharp({
+      create: { width: imgWidth, height: imgHeight, channels: 3, background: { r: 0, g: 0, b: 0 } },
+    })
+      .composite([{ input: Buffer.from(svgMask), top: 0, left: 0 }])
+      .png()
+      .toBuffer()
+
+    // Resize to canvas dimensions for display overlay
+    const maskCanvas = await sharp(maskFull)
       .resize(canvasWidth, canvasHeight, { fit: 'fill' })
-      .greyscale()
-      .threshold(128)
       .png()
       .toBuffer()
 
     return Response.json({
-      mask: `data:image/png;base64,${maskResized.toString('base64')}`,
+      mask: `data:image/png;base64,${maskCanvas.toString('base64')}`,
+      label: best.label,
     })
-  } catch (error) {
-    console.error('Segment error:', error)
+  } catch (err) {
+    console.error('Segment error:', err)
     return Response.json(
-      { error: error instanceof Error ? error.message : 'Unknown error' },
+      { error: err instanceof Error ? err.message : 'Unknown error' },
       { status: 500 }
     )
   }

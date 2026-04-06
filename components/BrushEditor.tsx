@@ -24,6 +24,7 @@ export default function BrushEditor({ job, onClose, onDone }: BrushEditorProps) 
   const [isSegmenting, setIsSegmenting] = useState(false)
   const [canvasReady, setCanvasReady] = useState(false)
   const [clickHint, setClickHint] = useState<{ x: number; y: number } | null>(null)
+  const [lastLabel, setLastLabel] = useState<string | null>(null)
   const lastPos = useRef<{ x: number; y: number } | null>(null)
 
   const imageUrl = job.decluttered_url || job.original_url
@@ -131,8 +132,9 @@ export default function BrushEditor({ job, onClose, onDone }: BrushEditorProps) 
         const err = await res.json()
         throw new Error(err.error || 'Erro desconhecido')
       }
-      const { mask } = await res.json()
-      applyMaskToOverlay(mask)
+      const data = await res.json()
+      applyMaskToOverlay(data.mask)
+      if (data.label) setLastLabel(data.label)
     } catch (err) {
       alert(`Erro ao segmentar: ${err instanceof Error ? err.message : err}`)
     } finally {
@@ -298,6 +300,13 @@ export default function BrushEditor({ job, onClose, onDone }: BrushEditorProps) 
           <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/40">
             <div className="w-8 h-8 border-2 border-blue-400 border-t-transparent rounded-full animate-spin mb-2" />
             <span className="text-xs text-blue-300">Detectando contorno...</span>
+          </div>
+        )}
+
+        {/* Label toast */}
+        {lastLabel && !isSegmenting && (
+          <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-black/70 text-white text-xs px-3 py-1.5 rounded-full pointer-events-none">
+            ✓ {lastLabel}
           </div>
         )}
 
