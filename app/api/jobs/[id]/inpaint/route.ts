@@ -64,28 +64,20 @@ export async function POST(
     const { data: maskUrlData } = supabaseServer.storage.from('processed').getPublicUrl(maskPath)
     const maskPublicUrl = maskUrlData.publicUrl
 
-    // Start Flux Fill Pro inpainting
-    // Conservative prompt: describe empty surface so Flux fills naturally
-    const fluxModel = await replicate.models.get('black-forest-labs', 'flux-fill-pro')
-    const fluxVersion = fluxModel.latest_version?.id
-    if (!fluxVersion) throw new Error('Could not get flux-fill-pro model version')
+    // LaMa inpainting — use pinned version that is confirmed working
+    const LAMA_VERSION = '0e3a841c913f597c1e4c321560aa69e2bc1f15c65f8c366caafc379240efd8ba'
 
-    const fluxPrediction = await replicate.predictions.create({
-      version: fluxVersion,
+    const lamaPrediction = await replicate.predictions.create({
+      version: LAMA_VERSION,
       input: {
         image: imageUrl,
         mask: maskPublicUrl,
-        prompt: 'empty wall, empty surface, no objects, same paint color, same texture as surrounding area, photorealistic interior photo',
-        guidance: 18,
-        steps: 30,
-        output_format: 'jpg',
-        safety_tolerance: 2,
       },
     })
 
     await supabaseServer.from('jobs').update({
       status: 'decluttering',
-      replicate_id_inpaint: fluxPrediction.id,
+      replicate_id_inpaint: lamaPrediction.id,
       replicate_id_enhance: null,
       error_message: null,
       updated_at: new Date().toISOString(),
