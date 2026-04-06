@@ -6,20 +6,20 @@ import sharp from 'sharp'
 export const runtime = 'nodejs'
 export const maxDuration = 60
 
-// Note: avoid reserved words like "object" — causes NoneType in DINO tokenizer
-const DETECT_PROMPT = 'bottle . cup . bag . clothing . shoe . toy . trash . box . cable . book . chair . lamp'
+// Broad prompt — avoid reserved words like "object", avoid multi-word phrases
+const SAM_PROMPT = 'bag . bottle . cup . clothing . shoe . toy . trash . box . cable . book . chair . lamp . table . sofa . rug . pillow . plant . basket . keyboard . mouse . phone . remote'
 
-async function pollUntilDone(predictionId: string, maxMs = 50000) {
+async function pollUntilDone(predictionId: string, maxMs = 55000) {
   const start = Date.now()
   while (Date.now() - start < maxMs) {
     const p = await replicate.predictions.get(predictionId)
     if (p.status === 'succeeded') return p
     if (p.status === 'failed' || p.status === 'canceled') {
-      throw new Error(`Detection ${p.status}: ${p.error ?? 'unknown error'}`)
+      throw new Error(`Segmentation ${p.status}: ${p.error ?? 'unknown error'}`)
     }
     await new Promise(r => setTimeout(r, 1500))
   }
-  throw new Error('Detection timed out')
+  throw new Error('Segmentation timed out')
 }
 
 export async function POST(
@@ -45,96 +45,99 @@ export async function POST(
       imageUrl = sd.signedUrl
     }
 
-    // Image dimensions
+    // Get image dimensions to map click → image pixel coords
     const imgRes = await fetch(imageUrl)
     const imgBuf = Buffer.from(await imgRes.arrayBuffer())
     const meta = await sharp(imgBuf).metadata()
     const imgWidth = meta.width!
     const imgHeight = meta.height!
 
-    // Map canvas click → image pixel coords
-    const px = (clickX / canvasWidth) * imgWidth
-    const py = (clickY / canvasHeight) * imgHeight
+    const pixelX = Math.round((clickX / canvasWidth) * imgWidth)
+    const pixelY = Math.round((clickY / canvasHeight) * imgHeight)
 
-    // Run Grounding DINO
-    const dinoModel = await replicate.models.get('adirik', 'grounding-dino')
-    const dinoVersion = dinoModel.latest_version?.id
-    if (!dinoVersion) throw new Error('Could not get DINO model version')
+    // Run grounded_sam — returns one PNG mask per detected object
+    const samModel = await replicate.models.get('schananas', 'grounded_sam')
+    const samVersion = samModel.latest_version?.id
+    if (!samVersion) throw new Error('Could not get grounded_sam model version')
 
-    const dinoPred = await replicate.predictions.create({
-      version: dinoVersion,
+    const pred = await replicate.predictions.create({
+      version: samVersion,
       input: {
         image: imageUrl,
-        prompt: DETECT_PROMPT,
-        box_threshold: 0.25,
-        text_threshold: 0.25,
+        mask_prompt: SAM_PROMPT,
       },
     })
 
-    const dinoResult = await pollUntilDone(dinoPred.id)
-    type Detection = { bbox: number[]; confidence: number; label: string }
-    const detections: Detection[] =
-      (dinoResult.output as { detections?: Detection[] })?.detections ?? []
+    const result = await pollUntilDone(pred.id)
 
-    if (detections.length === 0) {
+    const maskUrls: string[] = Array.isArray(result.output) ? result.output : []
+    if (maskUrls.length === 0) {
       return Response.json(
-        { error: 'Nenhum objeto detectado neste ponto. Use o modo Pincel para marcar manualmente.' },
+        { error: 'Nenhum objeto detectado. Use o modo Pincel para marcar manualmente.' },
         { status: 422 }
       )
     }
 
-    // Find smallest bbox that contains the click point
-    let best: Detection | null = null
-    let bestScore = Infinity
+    // Download all masks, find which one covers the click point
+    const masks = await Promise.all(
+      maskUrls.map(async (url) => {
+        const r = await fetch(url)
+        const buf = Buffer.from(await r.arrayBuffer())
+        // Resize to image dimensions for pixel lookup
+        const resized = await sharp(buf)
+          .resize(imgWidth, imgHeight, { fit: 'fill' })
+          .greyscale()
+          .raw()
+          .toBuffer()
+        return { buf, resized }
+      })
+    )
 
-    for (const det of detections) {
-      const [x1, y1, x2, y2] = det.bbox
-      if (px >= x1 && px <= x2 && py >= y1 && py <= y2) {
-        const area = (x2 - x1) * (y2 - y1)
-        if (area < bestScore) { bestScore = area; best = det }
+    // Find the mask where the click pixel is white (object pixel)
+    const bytesPerPixel = 1 // greyscale raw
+    const clickIdx = (pixelY * imgWidth + pixelX) * bytesPerPixel
+    let bestMaskBuf: Buffer | null = null
+
+    for (const { buf, resized } of masks) {
+      if (resized[clickIdx] > 128) {
+        bestMaskBuf = buf
+        break
       }
     }
 
-    // Fallback: closest detection center to click point
-    if (!best) {
-      bestScore = Infinity
-      for (const det of detections) {
-        const [x1, y1, x2, y2] = det.bbox
-        const dist = Math.sqrt(((x1 + x2) / 2 - px) ** 2 + ((y1 + y2) / 2 - py) ** 2)
-        if (dist < bestScore) { bestScore = dist; best = det }
+    // Fallback: pick the mask whose centroid is closest to the click
+    if (!bestMaskBuf) {
+      let bestDist = Infinity
+      for (const { buf, resized } of masks) {
+        let sumX = 0, sumY = 0, count = 0
+        for (let y = 0; y < imgHeight; y++) {
+          for (let x = 0; x < imgWidth; x++) {
+            if (resized[y * imgWidth + x] > 128) {
+              sumX += x; sumY += y; count++
+            }
+          }
+        }
+        if (count > 0) {
+          const dist = Math.sqrt((sumX / count - pixelX) ** 2 + (sumY / count - pixelY) ** 2)
+          if (dist < bestDist) { bestDist = dist; bestMaskBuf = buf }
+        }
       }
     }
 
-    if (!best) {
-      return Response.json({ error: 'Nenhum objeto encontrado.' }, { status: 422 })
+    if (!bestMaskBuf) {
+      return Response.json({ error: 'Não foi possível identificar o objeto.' }, { status: 422 })
     }
 
-    // Build binary mask at image resolution
-    const [x1, y1, x2, y2] = best.bbox
-    const bx = Math.max(0, Math.round(x1))
-    const by = Math.max(0, Math.round(y1))
-    const bw = Math.max(1, Math.round(x2 - x1))
-    const bh = Math.max(1, Math.round(y2 - y1))
-
-    const svgMask = `<svg width="${imgWidth}" height="${imgHeight}">` +
-      `<rect x="${bx}" y="${by}" width="${bw}" height="${bh}" fill="white"/></svg>`
-
-    const maskFull = await sharp({
-      create: { width: imgWidth, height: imgHeight, channels: 3, background: { r: 0, g: 0, b: 0 } },
-    })
-      .composite([{ input: Buffer.from(svgMask), top: 0, left: 0 }])
-      .png()
-      .toBuffer()
-
-    // Resize to canvas dimensions for display overlay
-    const maskCanvas = await sharp(maskFull)
+    // Resize winning mask to canvas dimensions for overlay
+    const canvasMask = await sharp(bestMaskBuf)
       .resize(canvasWidth, canvasHeight, { fit: 'fill' })
+      .greyscale()
+      .threshold(128)
       .png()
       .toBuffer()
 
     return Response.json({
-      mask: `data:image/png;base64,${maskCanvas.toString('base64')}`,
-      label: best.label,
+      mask: `data:image/png;base64,${canvasMask.toString('base64')}`,
     })
   } catch (err) {
     console.error('Segment error:', err)

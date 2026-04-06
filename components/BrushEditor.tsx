@@ -1,11 +1,11 @@
 'use client'
 
 import { useRef, useState, useEffect, useCallback } from 'react'
-import { X, RotateCcw, Minus, Plus, Trash2, Paintbrush, Square } from 'lucide-react'
+import { X, RotateCcw, Minus, Plus, Trash2, Paintbrush, MousePointer } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Job } from '@/lib/supabase'
 
-type Mode = 'rect' | 'brush'
+type Mode = 'click' | 'brush'
 
 interface BrushEditorProps {
   job: Job
@@ -16,13 +16,14 @@ interface BrushEditorProps {
 export default function BrushEditor({ job, onClose, onDone }: BrushEditorProps) {
   const photoRef = useRef<HTMLCanvasElement>(null)
   const paintRef = useRef<HTMLCanvasElement>(null)
-  const [mode, setMode] = useState<Mode>('rect')
+  const [mode, setMode] = useState<Mode>('click')
   const [brushSize, setBrushSize] = useState(30)
   const [isDrawing, setIsDrawing] = useState(false)
   const [history, setHistory] = useState<ImageData[]>([])
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [isSegmenting, setIsSegmenting] = useState(false)
   const [canvasReady, setCanvasReady] = useState(false)
-  const startPos = useRef<{ x: number; y: number } | null>(null)
+  const [clickDot, setClickDot] = useState<{ x: number; y: number } | null>(null)
   const lastPos = useRef<{ x: number; y: number } | null>(null)
 
   const imageUrl = job.decluttered_url || job.original_url
@@ -31,7 +32,6 @@ export default function BrushEditor({ job, onClose, onDone }: BrushEditorProps) 
     const photo = photoRef.current
     const paint = paintRef.current
     if (!photo || !paint) return
-
     const tryLoad = (crossOrigin: boolean) => {
       const img = new Image()
       if (crossOrigin) img.crossOrigin = 'anonymous'
@@ -70,66 +70,99 @@ export default function BrushEditor({ job, onClose, onDone }: BrushEditorProps) 
     setHistory(prev => [...prev.slice(-19), data])
   }, [])
 
-  // --- Rect drawing (live preview) ---
-  const redrawRect = useCallback((sx: number, sy: number, ex: number, ey: number) => {
+  const applyMaskToOverlay = useCallback((maskBase64: string) => {
     const paint = paintRef.current
     if (!paint) return
     const ctx = paint.getContext('2d')!
-    // Restore previous state (before this drag started)
-    if (history.length > 0) {
-      ctx.putImageData(history[history.length - 1], 0, 0)
-    } else {
-      ctx.clearRect(0, 0, paint.width, paint.height)
+    const img = new Image()
+    img.onload = () => {
+      const tmp = document.createElement('canvas')
+      tmp.width = paint.width; tmp.height = paint.height
+      const tmpCtx = tmp.getContext('2d')!
+      tmpCtx.drawImage(img, 0, 0, paint.width, paint.height)
+      const maskData = tmpCtx.getImageData(0, 0, tmp.width, tmp.height)
+      const overlayData = ctx.getImageData(0, 0, paint.width, paint.height)
+      for (let i = 0; i < maskData.data.length; i += 4) {
+        if (maskData.data[i] > 128) {
+          overlayData.data[i] = 239
+          overlayData.data[i + 1] = 68
+          overlayData.data[i + 2] = 68
+          overlayData.data[i + 3] = Math.max(overlayData.data[i + 3], 160)
+        }
+      }
+      ctx.putImageData(overlayData, 0, 0)
     }
-    const x = Math.min(sx, ex)
-    const y = Math.min(sy, ey)
-    const w = Math.abs(ex - sx)
-    const h = Math.abs(ey - sy)
-    if (w < 2 || h < 2) return
-    ctx.fillStyle = 'rgba(239, 68, 68, 0.40)'
-    ctx.fillRect(x, y, w, h)
-    ctx.strokeStyle = 'rgba(239, 68, 68, 0.9)'
-    ctx.lineWidth = 2
-    ctx.strokeRect(x, y, w, h)
-  }, [history])
+    img.src = maskBase64
+  }, [])
 
+  // Click mode — send to segment API
+  const handleClick = useCallback(async (e: React.MouseEvent | React.TouchEvent) => {
+    if (mode !== 'click' || isSegmenting) return
+    const paint = paintRef.current
+    if (!paint) return
+    e.preventDefault()
+
+    const pos = getPos(e, paint)
+    // Show dot at click position (as % of canvas for CSS)
+    const rect = paint.getBoundingClientRect()
+    const dotX = ('touches' in e ? e.touches[0].clientX : e.clientX) - rect.left
+    const dotY = ('touches' in e ? e.touches[0].clientY : e.clientY) - rect.top
+    setClickDot({ x: dotX, y: dotY })
+
+    saveHistory()
+    setIsSegmenting(true)
+    try {
+      const res = await fetch(`/api/jobs/${job.id}/segment`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          clickX: Math.round(pos.x),
+          clickY: Math.round(pos.y),
+          canvasWidth: paint.width,
+          canvasHeight: paint.height,
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Erro desconhecido')
+      applyMaskToOverlay(data.mask)
+    } catch (err) {
+      alert(`Erro: ${err instanceof Error ? err.message : err}`)
+    } finally {
+      setIsSegmenting(false)
+      setClickDot(null)
+    }
+  }, [mode, isSegmenting, job.id, saveHistory, applyMaskToOverlay])
+
+  // Brush mode
   const startDraw = useCallback((e: React.MouseEvent | React.TouchEvent) => {
+    if (mode !== 'brush') return
     const paint = paintRef.current
     if (!paint) return
     e.preventDefault()
     saveHistory()
     setIsDrawing(true)
-    const pos = getPos(e, paint)
-    startPos.current = pos
-    lastPos.current = pos
-  }, [saveHistory])
+    lastPos.current = getPos(e, paint)
+  }, [mode, saveHistory])
 
   const draw = useCallback((e: React.MouseEvent | React.TouchEvent) => {
-    if (!isDrawing) return
+    if (!isDrawing || mode !== 'brush') return
     const paint = paintRef.current
     if (!paint) return
     e.preventDefault()
+    const ctx = paint.getContext('2d')!
     const pos = getPos(e, paint)
-
-    if (mode === 'rect' && startPos.current) {
-      redrawRect(startPos.current.x, startPos.current.y, pos.x, pos.y)
-    } else if (mode === 'brush') {
-      const ctx = paint.getContext('2d')!
-      ctx.strokeStyle = 'rgba(239, 68, 68, 0.65)'
-      ctx.lineWidth = brushSize
-      ctx.lineCap = 'round'
-      ctx.lineJoin = 'round'
-      ctx.beginPath()
-      if (lastPos.current) ctx.moveTo(lastPos.current.x, lastPos.current.y)
-      ctx.lineTo(pos.x, pos.y)
-      ctx.stroke()
-    }
+    ctx.strokeStyle = 'rgba(239, 68, 68, 0.65)'
+    ctx.lineWidth = brushSize
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round'
+    ctx.beginPath()
+    if (lastPos.current) ctx.moveTo(lastPos.current.x, lastPos.current.y)
+    ctx.lineTo(pos.x, pos.y)
+    ctx.stroke()
     lastPos.current = pos
-  }, [isDrawing, mode, brushSize, redrawRect])
+  }, [isDrawing, mode, brushSize])
 
   const stopDraw = useCallback(() => {
     setIsDrawing(false)
-    startPos.current = null
     lastPos.current = null
   }, [])
 
@@ -150,7 +183,6 @@ export default function BrushEditor({ job, onClose, onDone }: BrushEditorProps) 
   const handleSubmit = async () => {
     const paint = paintRef.current
     if (!paint) return
-
     const mc = document.createElement('canvas')
     mc.width = paint.width; mc.height = paint.height
     const mCtx = mc.getContext('2d')!
@@ -165,7 +197,6 @@ export default function BrushEditor({ job, onClose, onDone }: BrushEditorProps) 
       }
     }
     mCtx.putImageData(md, 0, 0)
-
     setIsSubmitting(true)
     try {
       const res = await fetch(`/api/jobs/${job.id}/inpaint`, {
@@ -177,8 +208,7 @@ export default function BrushEditor({ job, onClose, onDone }: BrushEditorProps) 
         const err = await res.json()
         throw new Error(err.error || 'Erro desconhecido')
       }
-      onDone()
-      onClose()
+      onDone(); onClose()
     } catch (err) {
       alert(`Erro: ${err instanceof Error ? err.message : err}`)
     } finally {
@@ -188,13 +218,12 @@ export default function BrushEditor({ job, onClose, onDone }: BrushEditorProps) 
 
   return (
     <div className="fixed inset-0 z-50 bg-black/95 flex flex-col items-center overflow-auto p-4 md:p-6">
-      {/* Header */}
       <div className="w-full max-w-5xl flex items-center justify-between mb-3 flex-shrink-0">
         <div>
           <h2 className="text-white font-semibold text-base">Selecionar para remover</h2>
           <p className="text-xs text-gray-400 mt-0.5">
-            {mode === 'rect'
-              ? 'Clique e arraste para selecionar o objeto'
+            {mode === 'click'
+              ? 'Clique no objeto — IA detecta o contorno automaticamente (~10s)'
               : 'Pinte sobre os objetos que deseja remover'}
           </p>
         </div>
@@ -206,13 +235,13 @@ export default function BrushEditor({ job, onClose, onDone }: BrushEditorProps) 
       {/* Mode tabs */}
       <div className="flex gap-1 mb-3 bg-gray-800 rounded-lg p-1 flex-shrink-0">
         <button
-          onClick={() => setMode('rect')}
+          onClick={() => setMode('click')}
           className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
-            mode === 'rect' ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-white'
+            mode === 'click' ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-white'
           }`}
         >
-          <Square className="w-3.5 h-3.5" />
-          Selecionar
+          <MousePointer className="w-3.5 h-3.5" />
+          Clique
         </button>
         <button
           onClick={() => setMode('brush')}
@@ -231,15 +260,36 @@ export default function BrushEditor({ job, onClose, onDone }: BrushEditorProps) 
         <canvas
           ref={paintRef}
           className="absolute inset-0"
-          style={{ cursor: mode === 'rect' ? 'crosshair' : 'cell', touchAction: 'none' }}
-          onMouseDown={startDraw}
-          onMouseMove={draw}
+          style={{
+            cursor: mode === 'click' ? (isSegmenting ? 'wait' : 'crosshair') : 'cell',
+            touchAction: 'none',
+          }}
+          onClick={mode === 'click' ? handleClick : undefined}
+          onTouchEnd={mode === 'click' ? handleClick : undefined}
+          onMouseDown={mode === 'brush' ? startDraw : undefined}
+          onMouseMove={mode === 'brush' ? draw : undefined}
           onMouseUp={stopDraw}
           onMouseLeave={stopDraw}
-          onTouchStart={startDraw}
-          onTouchMove={draw}
-          onTouchEnd={stopDraw}
+          onTouchStart={mode === 'brush' ? startDraw : undefined}
+          onTouchMove={mode === 'brush' ? draw : undefined}
         />
+
+        {/* Segmenting overlay */}
+        {isSegmenting && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/50 pointer-events-none">
+            <div className="w-8 h-8 border-2 border-blue-400 border-t-transparent rounded-full animate-spin mb-2" />
+            <span className="text-xs text-blue-300 font-medium">Detectando contorno...</span>
+          </div>
+        )}
+
+        {/* Click dot feedback */}
+        {clickDot && (
+          <div
+            className="absolute w-5 h-5 rounded-full border-2 border-white bg-blue-500/70 -translate-x-1/2 -translate-y-1/2 pointer-events-none animate-ping"
+            style={{ left: clickDot.x, top: clickDot.y }}
+          />
+        )}
+
         {!canvasReady && (
           <div className="absolute inset-0 flex items-center justify-center bg-gray-900">
             <div className="w-6 h-6 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
@@ -261,12 +311,14 @@ export default function BrushEditor({ job, onClose, onDone }: BrushEditorProps) 
           </div>
         )}
 
-        <Button size="sm" variant="outline" onClick={undo} disabled={history.length === 0}
+        <Button size="sm" variant="outline" onClick={undo}
+          disabled={history.length === 0 || isSegmenting}
           className="border-gray-700 text-gray-300 hover:bg-gray-800 h-8">
           <RotateCcw className="w-3 h-3 mr-1" />Desfazer
         </Button>
 
         <Button size="sm" variant="outline" onClick={clear}
+          disabled={isSegmenting}
           className="border-gray-700 text-gray-300 hover:bg-gray-800 h-8">
           <Trash2 className="w-3 h-3 mr-1" />Limpar
         </Button>
@@ -276,7 +328,8 @@ export default function BrushEditor({ job, onClose, onDone }: BrushEditorProps) 
             className="border-gray-700 text-gray-300 hover:bg-gray-800 h-8">
             Cancelar
           </Button>
-          <Button size="sm" onClick={handleSubmit} disabled={isSubmitting || !canvasReady}
+          <Button size="sm" onClick={handleSubmit}
+            disabled={isSubmitting || isSegmenting || !canvasReady}
             className="bg-red-600 hover:bg-red-700 text-white h-8 disabled:opacity-60">
             {isSubmitting ? (
               <><div className="w-3 h-3 mr-1 border border-white border-t-transparent rounded-full animate-spin" />Removendo...</>
@@ -286,8 +339,8 @@ export default function BrushEditor({ job, onClose, onDone }: BrushEditorProps) 
       </div>
 
       <p className="text-xs text-gray-500 mt-2 flex-shrink-0 text-center">
-        {mode === 'rect'
-          ? 'Arraste sobre o objeto. Pode fazer várias seleções. A seleção acumula.'
+        {mode === 'click'
+          ? 'Clique em vários objetos para acumular seleções. Depois clique em Remover.'
           : 'Pinte sobre as áreas. Use Desfazer para corrigir.'}
       </p>
     </div>
