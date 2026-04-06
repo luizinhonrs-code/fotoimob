@@ -8,8 +8,7 @@ export const maxDuration = 60
 
 const CLUTTER_PROMPT = 'bottle . bag . handbag . cup . dish . bowl . cosmetics . toiletries . personal care product . clothing . shoe . sock . toy . trash . clutter . laundry . towel on floor'
 
-// LaMa remove-object model version
-const LAMA_VERSION = '42926554c6ea7aa2c7fe1f86a9ca599d4c4626d12731b483013b821b4ed5ad13'
+// LaMa inpainting - version fetched dynamically
 
 async function pollPredictionSync(predictionId: string, maxWaitMs = 45000): Promise<any> {
   const start = Date.now()
@@ -162,14 +161,17 @@ export async function POST(
     const { data: maskUrlData } = supabaseServer.storage.from('processed').getPublicUrl(maskPath)
     const maskPublicUrl = maskUrlData.publicUrl
 
-    // Step 3: Start LaMa inpainting
-    // Need a fresh signed URL for the original
+    // Step 3: Start LaMa inpainting — fetch latest version dynamically
     const { data: freshSignedUrl } = await supabaseServer.storage
       .from('originals')
       .createSignedUrl(job.original_filename, 3600)
 
+    const lamaModel = await replicate.models.get('zylim0702', 'remove-object')
+    const lamaVersion = lamaModel.latest_version?.id
+    if (!lamaVersion) throw new Error('Could not get latest version of zylim0702/remove-object')
+
     const lamaPrediction = await replicate.predictions.create({
-      version: LAMA_VERSION,
+      version: lamaVersion,
       input: {
         image: freshSignedUrl?.signedUrl || originalSignedUrl,
         mask: maskPublicUrl,
