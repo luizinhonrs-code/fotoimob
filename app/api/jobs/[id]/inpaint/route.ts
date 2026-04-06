@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server'
 import { supabaseServer } from '@/lib/supabase'
 import { replicate } from '@/lib/replicate'
+import sharp from 'sharp'
 
 export const runtime = 'nodejs'
 export const maxDuration = 30
@@ -26,18 +27,6 @@ export async function POST(
       return Response.json({ error: 'Job not found' }, { status: 404 })
     }
 
-    // Upload mask to Supabase
-    const base64Data = mask.replace(/^data:image\/png;base64,/, '')
-    const maskBuffer = Buffer.from(base64Data, 'base64')
-    const maskPath = `${id}_mask.png`
-
-    await supabaseServer.storage.from('processed').upload(maskPath, maskBuffer, {
-      contentType: 'image/png',
-      upsert: true,
-    })
-    const { data: maskUrlData } = supabaseServer.storage.from('processed').getPublicUrl(maskPath)
-    const maskPublicUrl = maskUrlData.publicUrl
-
     // Determine source image: use already-processed image if available, else original
     let imageUrl: string
     if (job.decluttered_url) {
@@ -51,6 +40,29 @@ export async function POST(
       }
       imageUrl = signedUrlData.signedUrl
     }
+
+    // Get source image dimensions so we can resize mask to match exactly
+    const imgResponse = await fetch(imageUrl)
+    const imgBuffer = Buffer.from(await imgResponse.arrayBuffer())
+    const imgMeta = await sharp(imgBuffer).metadata()
+    const imgWidth = imgMeta.width!
+    const imgHeight = imgMeta.height!
+
+    // Decode mask from base64, resize to match image dimensions
+    const base64Data = mask.replace(/^data:image\/png;base64,/, '')
+    const rawMaskBuffer = Buffer.from(base64Data, 'base64')
+    const maskBuffer = await sharp(rawMaskBuffer)
+      .resize(imgWidth, imgHeight, { fit: 'fill' })
+      .png()
+      .toBuffer()
+
+    const maskPath = `${id}_mask.png`
+    await supabaseServer.storage.from('processed').upload(maskPath, maskBuffer, {
+      contentType: 'image/png',
+      upsert: true,
+    })
+    const { data: maskUrlData } = supabaseServer.storage.from('processed').getPublicUrl(maskPath)
+    const maskPublicUrl = maskUrlData.publicUrl
 
     // Start LaMa inpainting
     const lamaModel = await replicate.models.get('zylim0702', 'remove-object')
