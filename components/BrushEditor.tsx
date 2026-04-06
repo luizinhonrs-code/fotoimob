@@ -1,11 +1,11 @@
 'use client'
 
 import { useRef, useState, useEffect, useCallback } from 'react'
-import { X, RotateCcw, Minus, Plus, Trash2, Paintbrush, Wand2 } from 'lucide-react'
+import { X, RotateCcw, Minus, Plus, Trash2, Paintbrush, MousePointer } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Job } from '@/lib/supabase'
 
-type Mode = 'wand' | 'brush'
+type Mode = 'click' | 'brush'
 
 interface BrushEditorProps {
   job: Job
@@ -13,99 +13,17 @@ interface BrushEditorProps {
   onDone: () => void
 }
 
-// Edge-aware magic wand: flood-fill that stops at object edges (Sobel gradient)
-// Click ON the object — fill stays within its borders
-function magicWand(
-  photoCtx: CanvasRenderingContext2D,
-  paintCtx: CanvasRenderingContext2D,
-  startX: number,
-  startY: number,
-  tolerance: number,
-  width: number,
-  height: number
-) {
-  const photoData = photoCtx.getImageData(0, 0, width, height)
-  const pix = photoData.data
-
-  // Precompute gradient magnitude at each pixel (simplified Sobel)
-  const gradient = new Float32Array(width * height)
-  for (let y = 1; y < height - 1; y++) {
-    for (let x = 1; x < width - 1; x++) {
-      const p = (y * width + x) * 4
-      const pr = (y * width + x + 1) * 4
-      const pl = (y * width + x - 1) * 4
-      const pu = ((y - 1) * width + x) * 4
-      const pd = ((y + 1) * width + x) * 4
-      // Gx and Gy per channel, take max channel
-      let gMax = 0
-      for (let c = 0; c < 3; c++) {
-        const gx = pix[pr + c] - pix[pl + c]
-        const gy = pix[pd + c] - pix[pu + c]
-        const g = Math.sqrt(gx * gx + gy * gy)
-        if (g > gMax) gMax = g
-      }
-      gradient[y * width + x] = gMax
-    }
-  }
-
-  const paintData = paintCtx.getImageData(0, 0, width, height)
-  const out = paintData.data
-
-  const sx = Math.round(startX), sy = Math.round(startY)
-  const startPos = sy * width + sx
-  const si = startPos * 4
-  const [r0, g0, b0] = [pix[si], pix[si + 1], pix[si + 2]]
-
-  // Edge threshold: pixels with gradient above this are "walls"
-  const edgeThreshold = 30
-
-  // Max pixels to prevent selecting huge areas accidentally
-  const maxPixels = Math.round(width * height * 0.25)
-
-  const visited = new Uint8Array(width * height)
-  const stack: number[] = [startPos]
-  visited[startPos] = 1
-  let count = 0
-
-  while (stack.length > 0 && count < maxPixels) {
-    const pos = stack.pop()!
-    const x = pos % width, y = Math.floor(pos / width)
-    const i = pos * 4
-
-    // Stop at strong edges
-    if (gradient[pos] > edgeThreshold) continue
-
-    // Stop if color too different from seed
-    const dr = pix[i] - r0, dg = pix[i + 1] - g0, db = pix[i + 2] - b0
-    if (Math.sqrt(dr * dr + dg * dg + db * db) > tolerance) continue
-
-    out[i] = 239; out[i + 1] = 68; out[i + 2] = 68
-    out[i + 3] = Math.max(out[i + 3], 160)
-    count++
-
-    const neighbors = [
-      x > 0 ? pos - 1 : -1,
-      x < width - 1 ? pos + 1 : -1,
-      y > 0 ? pos - width : -1,
-      y < height - 1 ? pos + width : -1,
-    ]
-    for (const n of neighbors) {
-      if (n >= 0 && !visited[n]) { visited[n] = 1; stack.push(n) }
-    }
-  }
-  paintCtx.putImageData(paintData, 0, 0)
-}
-
 export default function BrushEditor({ job, onClose, onDone }: BrushEditorProps) {
   const photoRef = useRef<HTMLCanvasElement>(null)
   const paintRef = useRef<HTMLCanvasElement>(null)
-  const [mode, setMode] = useState<Mode>('wand')
+  const [mode, setMode] = useState<Mode>('click')
   const [brushSize, setBrushSize] = useState(30)
-  const [tolerance, setTolerance] = useState(25)
   const [isDrawing, setIsDrawing] = useState(false)
   const [history, setHistory] = useState<ImageData[]>([])
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [isSegmenting, setIsSegmenting] = useState(false)
   const [canvasReady, setCanvasReady] = useState(false)
+  const [clickDot, setClickDot] = useState<{ x: number; y: number } | null>(null)
   const lastPos = useRef<{ x: number; y: number } | null>(null)
 
   const imageUrl = job.decluttered_url || job.original_url
@@ -152,25 +70,70 @@ export default function BrushEditor({ job, onClose, onDone }: BrushEditorProps) 
     setHistory(prev => [...prev.slice(-19), data])
   }, [])
 
-  // Wand click
-  const handleWandClick = useCallback((e: React.MouseEvent | React.TouchEvent) => {
-    if (mode !== 'wand') return
-    const photo = photoRef.current
+  const applyMaskToOverlay = useCallback((maskBase64: string) => {
     const paint = paintRef.current
-    if (!photo || !paint) return
-    e.preventDefault()
-    const pos = getPos(e, paint)
-    saveHistory()
-    magicWand(
-      photo.getContext('2d')!,
-      paint.getContext('2d')!,
-      pos.x, pos.y,
-      tolerance,
-      paint.width, paint.height
-    )
-  }, [mode, tolerance, saveHistory])
+    if (!paint) return
+    const ctx = paint.getContext('2d')!
+    const img = new Image()
+    img.onload = () => {
+      const tmp = document.createElement('canvas')
+      tmp.width = paint.width; tmp.height = paint.height
+      const tmpCtx = tmp.getContext('2d')!
+      tmpCtx.drawImage(img, 0, 0, paint.width, paint.height)
+      const maskData = tmpCtx.getImageData(0, 0, tmp.width, tmp.height)
+      const overlayData = ctx.getImageData(0, 0, paint.width, paint.height)
+      for (let i = 0; i < maskData.data.length; i += 4) {
+        // mask is greyscale: white = object
+        if (maskData.data[i] > 128) {
+          overlayData.data[i] = 239
+          overlayData.data[i + 1] = 68
+          overlayData.data[i + 2] = 68
+          overlayData.data[i + 3] = Math.max(overlayData.data[i + 3], 160)
+        }
+      }
+      ctx.putImageData(overlayData, 0, 0)
+    }
+    img.src = maskBase64
+  }, [])
 
-  // Brush
+  // Click mode — call segment API
+  const handleClick = useCallback(async (e: React.MouseEvent | React.TouchEvent) => {
+    if (mode !== 'click' || isSegmenting) return
+    const paint = paintRef.current
+    if (!paint) return
+    e.preventDefault()
+
+    const pos = getPos(e, paint)
+    const rect = paint.getBoundingClientRect()
+    const dotX = ('touches' in e ? (e as React.TouchEvent).touches[0].clientX : (e as React.MouseEvent).clientX) - rect.left
+    const dotY = ('touches' in e ? (e as React.TouchEvent).touches[0].clientY : (e as React.MouseEvent).clientY) - rect.top
+    setClickDot({ x: dotX, y: dotY })
+
+    saveHistory()
+    setIsSegmenting(true)
+    try {
+      const res = await fetch(`/api/jobs/${job.id}/segment`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          clickX: Math.round(pos.x),
+          clickY: Math.round(pos.y),
+          canvasWidth: paint.width,
+          canvasHeight: paint.height,
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Erro desconhecido')
+      applyMaskToOverlay(data.mask)
+    } catch (err) {
+      alert(`Erro: ${err instanceof Error ? err.message : err}`)
+    } finally {
+      setIsSegmenting(false)
+      setClickDot(null)
+    }
+  }, [mode, isSegmenting, job.id, saveHistory, applyMaskToOverlay])
+
+  // Brush mode
   const startDraw = useCallback((e: React.MouseEvent | React.TouchEvent) => {
     if (mode !== 'brush') return
     const paint = paintRef.current
@@ -259,8 +222,8 @@ export default function BrushEditor({ job, onClose, onDone }: BrushEditorProps) 
         <div>
           <h2 className="text-white font-semibold text-base">Selecionar para remover</h2>
           <p className="text-xs text-gray-400 mt-0.5">
-            {mode === 'wand'
-              ? 'Clique no objeto — seleciona pixels por cor similar'
+            {mode === 'click'
+              ? 'Clique no objeto — IA detecta o contorno (~15s)'
               : 'Pinte sobre os objetos que deseja remover'}
           </p>
         </div>
@@ -271,10 +234,10 @@ export default function BrushEditor({ job, onClose, onDone }: BrushEditorProps) 
 
       {/* Mode tabs */}
       <div className="flex gap-1 mb-3 bg-gray-800 rounded-lg p-1 flex-shrink-0">
-        <button onClick={() => setMode('wand')}
+        <button onClick={() => setMode('click')}
           className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
-            mode === 'wand' ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-white'}`}>
-          <Wand2 className="w-3.5 h-3.5" />Varinha
+            mode === 'click' ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-white'}`}>
+          <MousePointer className="w-3.5 h-3.5" />Clique
         </button>
         <button onClick={() => setMode('brush')}
           className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
@@ -289,9 +252,12 @@ export default function BrushEditor({ job, onClose, onDone }: BrushEditorProps) 
         <canvas
           ref={paintRef}
           className="absolute inset-0"
-          style={{ cursor: mode === 'wand' ? 'crosshair' : 'cell', touchAction: 'none' }}
-          onClick={mode === 'wand' ? handleWandClick : undefined}
-          onTouchEnd={mode === 'wand' ? handleWandClick : undefined}
+          style={{
+            cursor: mode === 'click' ? (isSegmenting ? 'wait' : 'crosshair') : 'cell',
+            touchAction: 'none',
+          }}
+          onClick={mode === 'click' ? handleClick : undefined}
+          onTouchEnd={mode === 'click' ? handleClick : undefined}
           onMouseDown={mode === 'brush' ? startDraw : undefined}
           onMouseMove={mode === 'brush' ? draw : undefined}
           onMouseUp={stopDraw}
@@ -299,6 +265,23 @@ export default function BrushEditor({ job, onClose, onDone }: BrushEditorProps) 
           onTouchStart={mode === 'brush' ? startDraw : undefined}
           onTouchMove={mode === 'brush' ? draw : undefined}
         />
+
+        {/* Segmenting overlay */}
+        {isSegmenting && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/50 pointer-events-none">
+            <div className="w-8 h-8 border-2 border-blue-400 border-t-transparent rounded-full animate-spin mb-2" />
+            <span className="text-xs text-blue-300 font-medium">Detectando objeto...</span>
+          </div>
+        )}
+
+        {/* Click dot */}
+        {clickDot && (
+          <div
+            className="absolute w-5 h-5 rounded-full border-2 border-white bg-blue-500/70 -translate-x-1/2 -translate-y-1/2 pointer-events-none animate-ping"
+            style={{ left: clickDot.x, top: clickDot.y }}
+          />
+        )}
+
         {!canvasReady && (
           <div className="absolute inset-0 flex items-center justify-center bg-gray-900">
             <div className="w-6 h-6 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
@@ -308,17 +291,6 @@ export default function BrushEditor({ job, onClose, onDone }: BrushEditorProps) 
 
       {/* Controls */}
       <div className="w-full max-w-5xl mt-3 flex flex-wrap items-center gap-2 flex-shrink-0">
-        {mode === 'wand' && (
-          <div className="flex items-center gap-1.5 bg-gray-800 rounded-lg px-2.5 py-1.5">
-            <button onClick={() => setTolerance(t => Math.max(5, t - 5))} className="text-gray-300 hover:text-white">
-              <Minus className="w-3.5 h-3.5" />
-            </button>
-            <span className="text-xs text-gray-300 w-28 text-center">Tolerância {tolerance}</span>
-            <button onClick={() => setTolerance(t => Math.min(120, t + 5))} className="text-gray-300 hover:text-white">
-              <Plus className="w-3.5 h-3.5" />
-            </button>
-          </div>
-        )}
         {mode === 'brush' && (
           <div className="flex items-center gap-1.5 bg-gray-800 rounded-lg px-2.5 py-1.5">
             <button onClick={() => setBrushSize(s => Math.max(5, s - 5))} className="text-gray-300 hover:text-white">
@@ -331,11 +303,12 @@ export default function BrushEditor({ job, onClose, onDone }: BrushEditorProps) 
           </div>
         )}
 
-        <Button size="sm" variant="outline" onClick={undo} disabled={history.length === 0}
+        <Button size="sm" variant="outline" onClick={undo}
+          disabled={history.length === 0 || isSegmenting}
           className="border-gray-700 text-gray-300 hover:bg-gray-800 h-8">
           <RotateCcw className="w-3 h-3 mr-1" />Desfazer
         </Button>
-        <Button size="sm" variant="outline" onClick={clear}
+        <Button size="sm" variant="outline" onClick={clear} disabled={isSegmenting}
           className="border-gray-700 text-gray-300 hover:bg-gray-800 h-8">
           <Trash2 className="w-3 h-3 mr-1" />Limpar
         </Button>
@@ -345,7 +318,8 @@ export default function BrushEditor({ job, onClose, onDone }: BrushEditorProps) 
             className="border-gray-700 text-gray-300 hover:bg-gray-800 h-8">
             Cancelar
           </Button>
-          <Button size="sm" onClick={handleSubmit} disabled={isSubmitting || !canvasReady}
+          <Button size="sm" onClick={handleSubmit}
+            disabled={isSubmitting || isSegmenting || !canvasReady}
             className="bg-red-600 hover:bg-red-700 text-white h-8 disabled:opacity-60">
             {isSubmitting
               ? <><div className="w-3 h-3 mr-1 border border-white border-t-transparent rounded-full animate-spin" />Removendo...</>
@@ -355,8 +329,8 @@ export default function BrushEditor({ job, onClose, onDone }: BrushEditorProps) 
       </div>
 
       <p className="text-xs text-gray-500 mt-2 flex-shrink-0 text-center">
-        {mode === 'wand'
-          ? 'Clique SOBRE o objeto (não no fundo). Vários cliques acumulam. Pincel para detalhes finos.'
+        {mode === 'click'
+          ? 'Clique diretamente sobre o objeto. Vários cliques acumulam seleções.'
           : 'Pinte sobre as áreas. Use Desfazer para corrigir.'}
       </p>
     </div>

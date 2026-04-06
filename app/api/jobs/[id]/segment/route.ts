@@ -31,7 +31,6 @@ export async function POST(
       .from('jobs').select('*').eq('id', id).single()
     if (error || !job) return Response.json({ error: 'Job not found' }, { status: 404 })
 
-    // Source image URL
     let imageUrl: string
     if (job.decluttered_url) {
       imageUrl = job.decluttered_url
@@ -49,11 +48,11 @@ export async function POST(
     const imgWidth = meta.width!
     const imgHeight = meta.height!
 
-    const pixelX = Math.round((clickX / canvasWidth) * imgWidth)
-    const pixelY = Math.round((clickY / canvasHeight) * imgHeight)
+    // Map canvas click → image pixel coords
+    const pixelX = Math.min(imgWidth - 1, Math.max(0, Math.round((clickX / canvasWidth) * imgWidth)))
+    const pixelY = Math.min(imgHeight - 1, Math.max(0, Math.round((clickY / canvasHeight) * imgHeight)))
 
-    // Use meta/sam-2 — automatic segmentation, no text prompt needed.
-    // Returns individual_masks: one PNG per detected object in the scene.
+    // Run meta/sam-2 — automatic segmentation, returns combined_mask
     const samModel = await replicate.models.get('meta', 'sam-2')
     const samVersion = samModel.latest_version?.id
     if (!samVersion) throw new Error('Could not get sam-2 model version')
@@ -62,8 +61,8 @@ export async function POST(
       version: samVersion,
       input: {
         image: imageUrl,
-        points_per_side: 32,        // grid density — higher = more objects detected
-        pred_iou_thresh: 0.80,      // lower = include more objects
+        points_per_side: 32,
+        pred_iou_thresh: 0.80,
         stability_score_thresh: 0.85,
         use_m2m: true,
       },
@@ -71,78 +70,58 @@ export async function POST(
 
     const result = await pollUntilDone(pred.id)
 
-    // individual_masks is array of URIs, one per object
-    const output = result.output as { individual_masks?: string[]; combined_mask?: string }
-    const maskUrls: string[] = output?.individual_masks ?? []
+    const output = result.output as { combined_mask?: string; individual_masks?: string[] }
+    const combinedMaskUrl = output?.combined_mask
+    if (!combinedMaskUrl) throw new Error('No combined mask returned from SAM')
 
-    if (maskUrls.length === 0) {
+    // Download combined_mask — each object has a unique color, background = black
+    const cmRes = await fetch(combinedMaskUrl)
+    const cmBuf = Buffer.from(await cmRes.arrayBuffer())
+
+    // Resize to image dimensions and get raw pixel data
+    const { data: rawData, info } = await sharp(cmBuf)
+      .resize(imgWidth, imgHeight, { fit: 'fill' })
+      .removeAlpha()
+      .raw()
+      .toBuffer({ resolveWithObject: true })
+
+    const ch = info.channels // should be 3 (RGB)
+    const clickPosIdx = (pixelY * imgWidth + pixelX) * ch
+    const cr = rawData[clickPosIdx]
+    const cg = rawData[clickPosIdx + 1]
+    const cb = rawData[clickPosIdx + 2]
+
+    // If click landed on background (black), nothing to select
+    if (cr < 15 && cg < 15 && cb < 15) {
       return Response.json(
-        { error: 'Nenhum objeto detectado. Use o modo Pincel para marcar manualmente.' },
+        { error: 'Nenhum objeto detectado nesse ponto. Clique diretamente sobre o objeto que deseja remover.' },
         { status: 422 }
       )
     }
 
-    // Download all masks concurrently, resize to image res for pixel lookup
-    const masks = await Promise.all(
-      maskUrls.map(async (url) => {
-        const r = await fetch(url)
-        const buf = Buffer.from(await r.arrayBuffer())
-        const resized = await sharp(buf)
-          .resize(imgWidth, imgHeight, { fit: 'fill' })
-          .greyscale()
-          .raw()
-          .toBuffer()
-        return { buf, resized }
-      })
-    )
-
-    // Find smallest mask that covers the click pixel
-    const clickIdx = pixelY * imgWidth + pixelX
-    let bestMaskBuf: Buffer | null = null
-    let bestArea = Infinity
-
-    for (const { buf, resized } of masks) {
-      if (resized[clickIdx] > 128) {
-        // Count white pixels (object area) — prefer smallest (most specific)
-        let area = 0
-        for (let i = 0; i < resized.length; i++) {
-          if (resized[i] > 128) area++
-        }
-        if (area < bestArea) { bestArea = area; bestMaskBuf = buf }
-      }
+    // Build strict B&W binary mask:
+    // pixels whose color matches the clicked segment → white
+    // everything else → black
+    const colorTolerance = 30
+    const binaryData = Buffer.alloc(imgWidth * imgHeight)
+    for (let i = 0; i < imgWidth * imgHeight; i++) {
+      const pi = i * ch
+      const dr = rawData[pi] - cr
+      const dg = rawData[pi + 1] - cg
+      const db = rawData[pi + 2] - cb
+      binaryData[i] = Math.sqrt(dr * dr + dg * dg + db * db) < colorTolerance ? 255 : 0
     }
 
-    // Fallback: closest centroid to click
-    if (!bestMaskBuf) {
-      let bestDist = Infinity
-      for (const { buf, resized } of masks) {
-        let sumX = 0, sumY = 0, count = 0
-        for (let y = 0; y < imgHeight; y++) {
-          for (let x = 0; x < imgWidth; x++) {
-            if (resized[y * imgWidth + x] > 128) { sumX += x; sumY += y; count++ }
-          }
-        }
-        if (count > 0) {
-          const dist = Math.sqrt((sumX / count - pixelX) ** 2 + (sumY / count - pixelY) ** 2)
-          if (dist < bestDist) { bestDist = dist; bestMaskBuf = buf }
-        }
-      }
-    }
-
-    if (!bestMaskBuf) {
-      return Response.json({ error: 'Não foi possível identificar o objeto.' }, { status: 422 })
-    }
-
-    // Resize winning mask to canvas size for overlay
-    const canvasMask = await sharp(bestMaskBuf)
+    // Convert to PNG and resize to canvas dimensions for overlay
+    const maskPng = await sharp(binaryData, {
+      raw: { width: imgWidth, height: imgHeight, channels: 1 },
+    })
       .resize(canvasWidth, canvasHeight, { fit: 'fill' })
-      .greyscale()
-      .threshold(128)
       .png()
       .toBuffer()
 
     return Response.json({
-      mask: `data:image/png;base64,${canvasMask.toString('base64')}`,
+      mask: `data:image/png;base64,${maskPng.toString('base64')}`,
     })
   } catch (err) {
     console.error('Segment error:', err)
