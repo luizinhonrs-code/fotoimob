@@ -119,15 +119,42 @@ export async function POST(
     const dinoResult = await pollPredictionSync(dinoPrediction.id, 45000)
 
     // Parse bounding boxes from DINO output
-    // DINO output format: { boxes: [[x1,y1,x2,y2], ...], logits: [...], phrases: [...] }
+    // Log raw output to understand format
+    console.log('DINO raw output type:', typeof dinoResult.output)
+    console.log('DINO raw output:', JSON.stringify(dinoResult.output)?.slice(0, 500))
+
     let boxes: number[][] = []
     const dinoOutput = dinoResult.output
 
-    if (dinoOutput && typeof dinoOutput === 'object') {
-      if ('boxes' in dinoOutput && Array.isArray(dinoOutput.boxes)) {
-        boxes = dinoOutput.boxes
+    if (typeof dinoOutput === 'string') {
+      // Output might be a URL to a JSON file or an image URL
+      if (dinoOutput.startsWith('http') && dinoOutput.includes('.json')) {
+        // Fetch JSON file
+        const jsonResp = await fetch(dinoOutput)
+        const jsonData = await jsonResp.json()
+        console.log('DINO JSON file contents:', JSON.stringify(jsonData)?.slice(0, 500))
+        if (Array.isArray(jsonData?.boxes)) boxes = jsonData.boxes
+      }
+    } else if (Array.isArray(dinoOutput)) {
+      // Output might be [image_url, json_url] or [boxes_array]
+      console.log('DINO output is array, length:', dinoOutput.length)
+      for (const item of dinoOutput) {
+        if (typeof item === 'string' && item.includes('.json')) {
+          const jsonResp = await fetch(item)
+          const jsonData = await jsonResp.json()
+          if (Array.isArray(jsonData?.boxes)) boxes = jsonData.boxes
+        } else if (Array.isArray(item) && Array.isArray(item[0])) {
+          boxes = item
+        }
+      }
+    } else if (dinoOutput && typeof dinoOutput === 'object') {
+      if ('boxes' in dinoOutput && Array.isArray((dinoOutput as {boxes: number[][]}).boxes)) {
+        boxes = (dinoOutput as {boxes: number[][]}).boxes
       }
     }
+
+    console.log('DINO parsed boxes count:', boxes.length)
+    if (boxes.length > 0) console.log('First box:', boxes[0])
 
     if (boxes.length === 0) {
       // No clutter detected - use original as final
