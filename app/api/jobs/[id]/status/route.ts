@@ -21,27 +21,8 @@ async function saveToProcessedBucket(imageUrl: string, filename: string): Promis
   return urlData.publicUrl
 }
 
-async function startEnhancement(imageUrl: string, jobId: string): Promise<string | null> {
-  try {
-    const model = await replicate.models.get('philz1337x', 'clarity-upscaler')
-    const version = model.latest_version?.id
-    if (!version) return null
-
-    const prediction = await replicate.predictions.create({
-      version,
-      input: {
-        image: imageUrl,
-        scale_factor: 2,
-        creativity: 0.35,
-        resemblance: 0.6,
-        dynamic: 6,
-      },
-    })
-    return prediction.id
-  } catch {
-    return null
-  }
-}
+// Enhancement step disabled to prevent race-condition credit drain.
+// Will be re-enabled with a proper queue when needed.
 
 export async function GET(
   _request: NextRequest,
@@ -108,20 +89,7 @@ export async function GET(
         // Save inpainted result
         const inpaintedUrl = await saveToProcessedBucket(outputUrl, `${id}_inpainted`)
 
-        // Try to start quality enhancement
-        const enhanceId = await startEnhancement(inpaintedUrl, id)
-
-        if (enhanceId) {
-          await supabaseServer.from('jobs').update({
-            decluttered_url: inpaintedUrl, // fallback if enhancement fails
-            status: 'polishing',
-            replicate_id_enhance: enhanceId,
-            updated_at: new Date().toISOString(),
-          }).eq('id', id)
-          return Response.json({ ...job, status: 'polishing', decluttered_url: inpaintedUrl })
-        }
-
-        // Enhancement unavailable — mark done with inpainted result
+        // Mark done with inpainted result
         await supabaseServer.from('jobs').update({
           decluttered_url: inpaintedUrl,
           status: 'done',
