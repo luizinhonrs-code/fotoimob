@@ -13,7 +13,8 @@ interface BrushEditorProps {
   onDone: () => void
 }
 
-// Magic wand: flood-fill selecting pixels with similar color to click point
+// Edge-aware magic wand: flood-fill that stops at object edges (Sobel gradient)
+// Click ON the object — fill stays within its borders
 function magicWand(
   photoCtx: CanvasRenderingContext2D,
   paintCtx: CanvasRenderingContext2D,
@@ -24,45 +25,72 @@ function magicWand(
   height: number
 ) {
   const photoData = photoCtx.getImageData(0, 0, width, height)
-  const paintData = paintCtx.getImageData(0, 0, width, height)
   const pix = photoData.data
-  const out = paintData.data
 
-  const idx = (x: number, y: number) => (y * width + x) * 4
-  const si = idx(Math.round(startX), Math.round(startY))
-  const [r0, g0, b0] = [pix[si], pix[si + 1], pix[si + 2]]
-
-  const colorDiff = (i: number) => {
-    const dr = pix[i] - r0, dg = pix[i + 1] - g0, db = pix[i + 2] - b0
-    return Math.sqrt(dr * dr + dg * dg + db * db)
+  // Precompute gradient magnitude at each pixel (simplified Sobel)
+  const gradient = new Float32Array(width * height)
+  for (let y = 1; y < height - 1; y++) {
+    for (let x = 1; x < width - 1; x++) {
+      const p = (y * width + x) * 4
+      const pr = (y * width + x + 1) * 4
+      const pl = (y * width + x - 1) * 4
+      const pu = ((y - 1) * width + x) * 4
+      const pd = ((y + 1) * width + x) * 4
+      // Gx and Gy per channel, take max channel
+      let gMax = 0
+      for (let c = 0; c < 3; c++) {
+        const gx = pix[pr + c] - pix[pl + c]
+        const gy = pix[pd + c] - pix[pu + c]
+        const g = Math.sqrt(gx * gx + gy * gy)
+        if (g > gMax) gMax = g
+      }
+      gradient[y * width + x] = gMax
+    }
   }
 
-  const visited = new Uint8Array(width * height)
-  const stack: number[] = [Math.round(startX) + Math.round(startY) * width]
-  visited[Math.round(startX) + Math.round(startY) * width] = 1
+  const paintData = paintCtx.getImageData(0, 0, width, height)
+  const out = paintData.data
 
-  while (stack.length > 0) {
+  const sx = Math.round(startX), sy = Math.round(startY)
+  const startPos = sy * width + sx
+  const si = startPos * 4
+  const [r0, g0, b0] = [pix[si], pix[si + 1], pix[si + 2]]
+
+  // Edge threshold: pixels with gradient above this are "walls"
+  const edgeThreshold = 30
+
+  // Max pixels to prevent selecting huge areas accidentally
+  const maxPixels = Math.round(width * height * 0.25)
+
+  const visited = new Uint8Array(width * height)
+  const stack: number[] = [startPos]
+  visited[startPos] = 1
+  let count = 0
+
+  while (stack.length > 0 && count < maxPixels) {
     const pos = stack.pop()!
     const x = pos % width, y = Math.floor(pos / width)
     const i = pos * 4
 
-    if (colorDiff(i) <= tolerance) {
-      // Mark as selected in paint overlay
-      out[i] = 239; out[i + 1] = 68; out[i + 2] = 68
-      out[i + 3] = Math.max(out[i + 3], 160)
+    // Stop at strong edges
+    if (gradient[pos] > edgeThreshold) continue
 
-      const neighbors = [
-        x > 0 ? pos - 1 : -1,
-        x < width - 1 ? pos + 1 : -1,
-        y > 0 ? pos - width : -1,
-        y < height - 1 ? pos + width : -1,
-      ]
-      for (const n of neighbors) {
-        if (n >= 0 && !visited[n]) {
-          visited[n] = 1
-          stack.push(n)
-        }
-      }
+    // Stop if color too different from seed
+    const dr = pix[i] - r0, dg = pix[i + 1] - g0, db = pix[i + 2] - b0
+    if (Math.sqrt(dr * dr + dg * dg + db * db) > tolerance) continue
+
+    out[i] = 239; out[i + 1] = 68; out[i + 2] = 68
+    out[i + 3] = Math.max(out[i + 3], 160)
+    count++
+
+    const neighbors = [
+      x > 0 ? pos - 1 : -1,
+      x < width - 1 ? pos + 1 : -1,
+      y > 0 ? pos - width : -1,
+      y < height - 1 ? pos + width : -1,
+    ]
+    for (const n of neighbors) {
+      if (n >= 0 && !visited[n]) { visited[n] = 1; stack.push(n) }
     }
   }
   paintCtx.putImageData(paintData, 0, 0)
@@ -73,7 +101,7 @@ export default function BrushEditor({ job, onClose, onDone }: BrushEditorProps) 
   const paintRef = useRef<HTMLCanvasElement>(null)
   const [mode, setMode] = useState<Mode>('wand')
   const [brushSize, setBrushSize] = useState(30)
-  const [tolerance, setTolerance] = useState(35)
+  const [tolerance, setTolerance] = useState(25)
   const [isDrawing, setIsDrawing] = useState(false)
   const [history, setHistory] = useState<ImageData[]>([])
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -328,7 +356,7 @@ export default function BrushEditor({ job, onClose, onDone }: BrushEditorProps) 
 
       <p className="text-xs text-gray-500 mt-2 flex-shrink-0 text-center">
         {mode === 'wand'
-          ? 'Clique várias vezes para expandir a seleção. Aumente a Tolerância para selecionar mais pixels.'
+          ? 'Clique SOBRE o objeto (não no fundo). Vários cliques acumulam. Pincel para detalhes finos.'
           : 'Pinte sobre as áreas. Use Desfazer para corrigir.'}
       </p>
     </div>
