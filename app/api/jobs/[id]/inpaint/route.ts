@@ -75,9 +75,9 @@ export async function POST(
       input: {
         image: imageUrl,
         mask: maskPublicUrl,
-        prompt: 'empty surface, continue the same texture and material from surrounding area, no new objects, photorealistic',
-        guidance: 8,
-        steps: 28,
+        prompt: 'empty wall, empty surface, no objects, same paint color, same texture as surrounding area, photorealistic interior photo',
+        guidance: 18,
+        steps: 30,
         output_format: 'jpg',
         safety_tolerance: 2,
       },
