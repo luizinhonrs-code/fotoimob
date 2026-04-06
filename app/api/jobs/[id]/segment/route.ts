@@ -91,18 +91,10 @@ export async function POST(
     const cg = rawData[clickPosIdx + 1]
     const cb = rawData[clickPosIdx + 2]
 
-    // If click landed on background (black), nothing to select
-    if (cr < 15 && cg < 15 && cb < 15) {
-      return Response.json(
-        { error: 'Nenhum objeto detectado nesse ponto. Clique diretamente sobre o objeto que deseja remover.' },
-        { status: 422 }
-      )
-    }
-
     // Build strict B&W binary mask:
-    // pixels whose color matches the clicked segment → white
-    // everything else → black
-    const colorTolerance = 30
+    // SAM assigns a unique color per segment — use very tight tolerance
+    // so we don't accidentally match neighboring segments with similar hues
+    const colorTolerance = 8
     const binaryData = Buffer.alloc(imgWidth * imgHeight)
     for (let i = 0; i < imgWidth * imgHeight; i++) {
       const pi = i * ch
