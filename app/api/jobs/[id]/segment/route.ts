@@ -57,23 +57,24 @@ export async function POST(
     const pixelX = Math.round((clickX / canvasWidth) * imgWidth)
     const pixelY = Math.round((clickY / canvasHeight) * imgHeight)
 
-    // Run SAM (Segment Anything Model)
-    const samModel = await replicate.models.get('zsxkib', 'segment-anything')
+    // Run SAM 2 (meta/sam-2-video supports click-point segmentation on images)
+    const samModel = await replicate.models.get('meta', 'sam-2-video')
     const samVersion = samModel.latest_version?.id
-    if (!samVersion) throw new Error('Could not get segment-anything model version')
+    if (!samVersion) throw new Error('Could not get sam-2-video model version')
 
     const prediction = await replicate.predictions.create({
       version: samVersion,
       input: {
-        image: imageUrl,
-        input_point: [[pixelX, pixelY]],
-        input_label: [1],
+        media: imageUrl,
+        click_coordinates: `[${pixelX},${pixelY}]`,
+        click_labels: '1',
+        click_frames: '0',
       },
     })
 
     const result = await pollUntilDone(prediction.id)
 
-    // SAM returns array of mask URLs — pick the best (highest-confidence first)
+    // Output is array of mask URIs (one per detected object)
     let maskUrl: string
     if (Array.isArray(result.output) && result.output.length > 0) {
       maskUrl = result.output[0]
