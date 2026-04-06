@@ -6,9 +6,8 @@ import sharp from 'sharp'
 export const runtime = 'nodejs'
 export const maxDuration = 60
 
-// Broad detection prompt to find anything the user might click on
-const DETECT_PROMPT =
-  'object . furniture . electronic . bag . clothing . bottle . cup . bowl . box . cable . remote control . book . toy . trash . basket . chair . table . lamp . plant . pillow . rug . shoe . clutter'
+// Keep prompt short — DINO parser breaks with too many tokens
+const DETECT_PROMPT = 'object . furniture . bag . clothing . bottle . cup . box . cable . book . toy . trash . shoe'
 
 async function pollUntilDone(predictionId: string, maxMs = 50000) {
   const start = Date.now()
