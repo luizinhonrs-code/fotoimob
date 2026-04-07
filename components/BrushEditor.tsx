@@ -187,6 +187,14 @@ export default function BrushEditor({ job, onClose, onDone }: BrushEditorProps) 
     })
   }, [mode, samMasks, samAnalyzing])
 
+  // Save canvas state for undo
+  const saveHistory = useCallback(() => {
+    const paint = paintRef.current
+    if (!paint) return
+    const data = paint.getContext('2d')!.getImageData(0, 0, paint.width, paint.height)
+    setHistory(prev => [...prev.slice(-19), data])
+  }, [])
+
   // Brush painting works in both modes — adds shadow/extras on top of click selections
   const startDraw = useCallback((e: React.MouseEvent | React.TouchEvent) => {
     const paint = paintRef.current
@@ -213,14 +221,6 @@ export default function BrushEditor({ job, onClose, onDone }: BrushEditorProps) 
     ctx.stroke()
     lastPos.current = pos
   }, [isDrawing, brushSize])
-
-  // Save canvas state for undo
-  const saveHistory = useCallback(() => {
-    const paint = paintRef.current
-    if (!paint) return
-    const data = paint.getContext('2d')!.getImageData(0, 0, paint.width, paint.height)
-    setHistory(prev => [...prev.slice(-19), data])
-  }, [])
 
   const stopDraw = useCallback(() => {
     setIsDrawing(false)
