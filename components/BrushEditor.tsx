@@ -7,6 +7,14 @@ import { Job } from '@/lib/supabase'
 
 type Mode = 'click' | 'brush'
 
+interface SamMask {
+  index: number
+  area: number
+  cx: number  // canvas coords
+  cy: number  // canvas coords
+  storedPath: string
+}
+
 interface BrushEditorProps {
   job: Job
   onClose: () => void
@@ -21,14 +29,22 @@ export default function BrushEditor({ job, onClose, onDone }: BrushEditorProps) 
   const [isDrawing, setIsDrawing] = useState(false)
   const [history, setHistory] = useState<ImageData[]>([])
   const [isSubmitting, setIsSubmitting] = useState(false)
-  const [isSegmenting, setIsSegmenting] = useState(false)
   const [canvasReady, setCanvasReady] = useState(false)
-  const [clickDot, setClickDot] = useState<{ x: number; y: number } | null>(null)
-  const [storedMaskUrl, setStoredMaskUrl] = useState<string | null>(null)
+
+  // Click mode state
+  const [samAnalyzing, setSamAnalyzing] = useState(false)
+  const [samError, setSamError] = useState<string | null>(null)
+  const [samMasks, setSamMasks] = useState<SamMask[] | null>(null)
+  const [selectedIndices, setSelectedIndices] = useState<Set<number>>(new Set())
+  const maskPixels = useRef<Map<number, Uint8Array>>(new Map())
+  const analysisStarted = useRef(false)
+
+  // Brush mode state
   const lastPos = useRef<{ x: number; y: number } | null>(null)
 
   const imageUrl = job.decluttered_url || job.original_url
 
+  // Load image onto canvas
   useEffect(() => {
     const photo = photoRef.current
     const paint = paintRef.current
@@ -53,6 +69,83 @@ export default function BrushEditor({ job, onClose, onDone }: BrushEditorProps) 
     tryLoad(true)
   }, [imageUrl])
 
+  // Start SAM analysis when canvas is ready and mode is click
+  useEffect(() => {
+    if (!canvasReady || mode !== 'click' || analysisStarted.current) return
+    analysisStarted.current = true
+    runAnalysis()
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canvasReady, mode])
+
+  const runAnalysis = async () => {
+    const paint = paintRef.current
+    if (!paint) return
+    setSamAnalyzing(true)
+    setSamError(null)
+    try {
+      const res = await fetch(`/api/jobs/${job.id}/segment-all`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ canvasWidth: paint.width, canvasHeight: paint.height }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Erro desconhecido')
+
+      // Decode each canvas PNG into a Uint8Array of pixel brightness values
+      await Promise.all(data.masks.map((m: SamMask & { canvasB64: string }) =>
+        decodeMaskPixels(m.index, m.canvasB64, paint.width, paint.height)
+      ))
+
+      setSamMasks(data.masks.map(({ canvasB64: _c, ...rest }: SamMask & { canvasB64: string }) => rest))
+    } catch (err) {
+      setSamError(err instanceof Error ? err.message : 'Erro ao analisar imagem')
+    } finally {
+      setSamAnalyzing(false)
+    }
+  }
+
+  const decodeMaskPixels = (index: number, b64: string, w: number, h: number): Promise<void> =>
+    new Promise(resolve => {
+      const img = new Image()
+      img.onload = () => {
+        const tmp = document.createElement('canvas')
+        tmp.width = w; tmp.height = h
+        tmp.getContext('2d')!.drawImage(img, 0, 0, w, h)
+        const imageData = tmp.getContext('2d')!.getImageData(0, 0, w, h)
+        const pixels = new Uint8Array(w * h)
+        for (let i = 0; i < pixels.length; i++) pixels[i] = imageData.data[i * 4]
+        maskPixels.current.set(index, pixels)
+        resolve()
+      }
+      img.onerror = () => resolve()
+      img.src = `data:image/png;base64,${b64}`
+    })
+
+  // Redraw overlay whenever selection changes
+  useEffect(() => {
+    const paint = paintRef.current
+    if (!paint) return
+    const ctx = paint.getContext('2d')!
+    const w = paint.width, h = paint.height
+    const combined = ctx.createImageData(w, h)
+
+    for (const idx of selectedIndices) {
+      const pixels = maskPixels.current.get(idx)
+      if (!pixels) continue
+      for (let i = 0; i < pixels.length; i++) {
+        if (pixels[i] > 128) {
+          combined.data[i * 4] = 239
+          combined.data[i * 4 + 1] = 68
+          combined.data[i * 4 + 2] = 68
+          combined.data[i * 4 + 3] = 160
+        }
+      }
+    }
+
+    ctx.clearRect(0, 0, w, h)
+    ctx.putImageData(combined, 0, 0)
+  }, [selectedIndices])
+
   const getPos = (e: React.MouseEvent | React.TouchEvent, canvas: HTMLCanvasElement) => {
     const rect = canvas.getBoundingClientRect()
     const sx = canvas.width / rect.width
@@ -64,6 +157,37 @@ export default function BrushEditor({ job, onClose, onDone }: BrushEditorProps) 
     return { x: (e.clientX - rect.left) * sx, y: (e.clientY - rect.top) * sy }
   }
 
+  // Click mode: find and toggle the smallest mask at the click point
+  const handleClick = useCallback((e: React.MouseEvent | React.TouchEvent) => {
+    if (mode !== 'click' || !samMasks || samAnalyzing) return
+    const paint = paintRef.current
+    if (!paint) return
+    e.preventDefault()
+    const pos = getPos(e, paint)
+    const px = Math.floor(pos.x)
+    const py = Math.floor(pos.y)
+
+    let best: SamMask | null = null
+    for (const mask of samMasks) {
+      const pixels = maskPixels.current.get(mask.index)
+      if (!pixels) continue
+      const idx = py * paint.width + px
+      if (idx >= 0 && idx < pixels.length && pixels[idx] > 128) {
+        if (!best || mask.area < best.area) best = mask
+      }
+    }
+
+    if (!best) return
+
+    setSelectedIndices(prev => {
+      const next = new Set(prev)
+      if (next.has(best!.index)) next.delete(best!.index)
+      else next.add(best!.index)
+      return next
+    })
+  }, [mode, samMasks, samAnalyzing])
+
+  // Brush mode handlers
   const saveHistory = useCallback(() => {
     const paint = paintRef.current
     if (!paint) return
@@ -71,71 +195,6 @@ export default function BrushEditor({ job, onClose, onDone }: BrushEditorProps) 
     setHistory(prev => [...prev.slice(-19), data])
   }, [])
 
-  const applyMaskToOverlay = useCallback((maskBase64: string) => {
-    const paint = paintRef.current
-    if (!paint) return
-    const ctx = paint.getContext('2d')!
-    const img = new Image()
-    img.onload = () => {
-      const tmp = document.createElement('canvas')
-      tmp.width = paint.width; tmp.height = paint.height
-      const tmpCtx = tmp.getContext('2d')!
-      tmpCtx.drawImage(img, 0, 0, paint.width, paint.height)
-      const maskData = tmpCtx.getImageData(0, 0, tmp.width, tmp.height)
-      const overlayData = ctx.getImageData(0, 0, paint.width, paint.height)
-      for (let i = 0; i < maskData.data.length; i += 4) {
-        // mask is greyscale: white = object
-        if (maskData.data[i] > 128) {
-          overlayData.data[i] = 239
-          overlayData.data[i + 1] = 68
-          overlayData.data[i + 2] = 68
-          overlayData.data[i + 3] = Math.max(overlayData.data[i + 3], 160)
-        }
-      }
-      ctx.putImageData(overlayData, 0, 0)
-    }
-    img.src = maskBase64
-  }, [])
-
-  // Click mode — call segment API
-  const handleClick = useCallback(async (e: React.MouseEvent | React.TouchEvent) => {
-    if (mode !== 'click' || isSegmenting) return
-    const paint = paintRef.current
-    if (!paint) return
-    e.preventDefault()
-
-    const pos = getPos(e, paint)
-    const rect = paint.getBoundingClientRect()
-    const dotX = ('touches' in e ? (e as React.TouchEvent).touches[0].clientX : (e as React.MouseEvent).clientX) - rect.left
-    const dotY = ('touches' in e ? (e as React.TouchEvent).touches[0].clientY : (e as React.MouseEvent).clientY) - rect.top
-    setClickDot({ x: dotX, y: dotY })
-
-    saveHistory()
-    setIsSegmenting(true)
-    try {
-      const res = await fetch(`/api/jobs/${job.id}/segment`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          clickX: Math.round(pos.x),
-          clickY: Math.round(pos.y),
-          canvasWidth: paint.width,
-          canvasHeight: paint.height,
-        }),
-      })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error || 'Erro desconhecido')
-      applyMaskToOverlay(data.mask)
-      if (data.maskPublicUrl) setStoredMaskUrl(data.maskPublicUrl)
-    } catch (err) {
-      alert(`Erro: ${err instanceof Error ? err.message : err}`)
-    } finally {
-      setIsSegmenting(false)
-      setClickDot(null)
-    }
-  }, [mode, isSegmenting, job.id, saveHistory, applyMaskToOverlay])
-
-  // Brush mode
   const startDraw = useCallback((e: React.MouseEvent | React.TouchEvent) => {
     if (mode !== 'brush') return
     const paint = paintRef.current
@@ -169,6 +228,16 @@ export default function BrushEditor({ job, onClose, onDone }: BrushEditorProps) 
   }, [])
 
   const undo = () => {
+    if (mode === 'click') {
+      // Undo last mask toggle
+      setSelectedIndices(prev => {
+        if (prev.size === 0) return prev
+        const arr = [...prev]
+        const next = new Set(arr.slice(0, -1))
+        return next
+      })
+      return
+    }
     const paint = paintRef.current
     if (!paint || history.length === 0) return
     paint.getContext('2d')!.putImageData(history[history.length - 1], 0, 0)
@@ -176,25 +245,28 @@ export default function BrushEditor({ job, onClose, onDone }: BrushEditorProps) 
   }
 
   const clear = () => {
+    if (mode === 'click') {
+      setSelectedIndices(new Set())
+      return
+    }
     const paint = paintRef.current
     if (!paint) return
     saveHistory()
     paint.getContext('2d')!.clearRect(0, 0, paint.width, paint.height)
-    setStoredMaskUrl(null)
   }
 
   const handleSubmit = async () => {
-    const paint = paintRef.current
-    if (!paint) return
     setIsSubmitting(true)
 
-    // Click mode: send public URL of clean SAM-derived mask directly — no reprocessing
-    if (mode === 'click' && storedMaskUrl) {
+    if (mode === 'click' && samMasks && selectedIndices.size > 0) {
+      const selectedPaths = [...selectedIndices]
+        .map(i => samMasks.find(m => m.index === i)?.storedPath)
+        .filter((p): p is string => !!p)
       try {
         const res = await fetch(`/api/jobs/${job.id}/inpaint`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ maskPublicUrl: storedMaskUrl }),
+          body: JSON.stringify({ maskPaths: selectedPaths }),
         })
         if (!res.ok) {
           const err = await res.json()
@@ -209,7 +281,9 @@ export default function BrushEditor({ job, onClose, onDone }: BrushEditorProps) 
       return
     }
 
-    // Brush mode (or click fallback): build B&W mask from canvas overlay
+    // Brush mode: build mask from canvas overlay
+    const paint = paintRef.current
+    if (!paint) { setIsSubmitting(false); return }
     const mc = document.createElement('canvas')
     mc.width = paint.width; mc.height = paint.height
     const mCtx = mc.getContext('2d')!
@@ -219,8 +293,7 @@ export default function BrushEditor({ job, onClose, onDone }: BrushEditorProps) 
     const md = mCtx.getImageData(0, 0, mc.width, mc.height)
     for (let i = 0; i < od.data.length; i += 4) {
       if (od.data[i + 3] > 10) {
-        md.data[i] = 255; md.data[i + 1] = 255
-        md.data[i + 2] = 255; md.data[i + 3] = 255
+        md.data[i] = 255; md.data[i + 1] = 255; md.data[i + 2] = 255; md.data[i + 3] = 255
       }
     }
     mCtx.putImageData(md, 0, 0)
@@ -242,6 +315,10 @@ export default function BrushEditor({ job, onClose, onDone }: BrushEditorProps) 
     }
   }
 
+  const canSubmit = mode === 'click'
+    ? selectedIndices.size > 0
+    : true
+
   return (
     <div className="fixed inset-0 z-50 bg-black/95 flex flex-col items-center overflow-auto p-4 md:p-6">
       <div className="w-full max-w-5xl flex items-center justify-between mb-3 flex-shrink-0">
@@ -249,7 +326,11 @@ export default function BrushEditor({ job, onClose, onDone }: BrushEditorProps) 
           <h2 className="text-white font-semibold text-base">Selecionar para remover</h2>
           <p className="text-xs text-gray-400 mt-0.5">
             {mode === 'click'
-              ? 'Clique no objeto — IA detecta o contorno (~15s)'
+              ? samAnalyzing
+                ? 'Analisando imagem (~15s)...'
+                : samMasks
+                  ? `Clique para selecionar/desmarcar objetos • ${selectedIndices.size} selecionado${selectedIndices.size !== 1 ? 's' : ''}`
+                  : 'Clique no objeto — IA detecta o contorno'
               : 'Pinte sobre os objetos que deseja remover'}
           </p>
         </div>
@@ -279,7 +360,9 @@ export default function BrushEditor({ job, onClose, onDone }: BrushEditorProps) 
           ref={paintRef}
           className="absolute inset-0"
           style={{
-            cursor: mode === 'click' ? (isSegmenting ? 'wait' : 'crosshair') : 'cell',
+            cursor: mode === 'click'
+              ? (samAnalyzing ? 'wait' : samMasks ? 'pointer' : 'default')
+              : 'cell',
             touchAction: 'none',
           }}
           onClick={mode === 'click' ? handleClick : undefined}
@@ -292,20 +375,25 @@ export default function BrushEditor({ job, onClose, onDone }: BrushEditorProps) 
           onTouchMove={mode === 'brush' ? draw : undefined}
         />
 
-        {/* Segmenting overlay */}
-        {isSegmenting && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/50 pointer-events-none">
+        {/* SAM analyzing overlay */}
+        {samAnalyzing && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/60 pointer-events-none">
             <div className="w-8 h-8 border-2 border-blue-400 border-t-transparent rounded-full animate-spin mb-2" />
-            <span className="text-xs text-blue-300 font-medium">Detectando objeto...</span>
+            <span className="text-sm text-blue-300 font-medium">Analisando imagem...</span>
+            <span className="text-xs text-gray-400 mt-1">Isso leva ~15s, apenas na primeira vez</span>
           </div>
         )}
 
-        {/* Click dot */}
-        {clickDot && (
-          <div
-            className="absolute w-5 h-5 rounded-full border-2 border-white bg-blue-500/70 -translate-x-1/2 -translate-y-1/2 pointer-events-none animate-ping"
-            style={{ left: clickDot.x, top: clickDot.y }}
-          />
+        {/* SAM error */}
+        {samError && !samAnalyzing && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/60">
+            <p className="text-red-400 text-sm mb-2">{samError}</p>
+            <button
+              onClick={() => { analysisStarted.current = false; runAnalysis() }}
+              className="text-xs text-blue-400 underline">
+              Tentar novamente
+            </button>
+          </div>
         )}
 
         {!canvasReady && (
@@ -330,11 +418,11 @@ export default function BrushEditor({ job, onClose, onDone }: BrushEditorProps) 
         )}
 
         <Button size="sm" variant="outline" onClick={undo}
-          disabled={history.length === 0 || isSegmenting}
+          disabled={mode === 'click' ? selectedIndices.size === 0 : history.length === 0}
           className="border-gray-700 text-gray-300 hover:bg-gray-800 h-8">
           <RotateCcw className="w-3 h-3 mr-1" />Desfazer
         </Button>
-        <Button size="sm" variant="outline" onClick={clear} disabled={isSegmenting}
+        <Button size="sm" variant="outline" onClick={clear}
           className="border-gray-700 text-gray-300 hover:bg-gray-800 h-8">
           <Trash2 className="w-3 h-3 mr-1" />Limpar
         </Button>
@@ -345,7 +433,7 @@ export default function BrushEditor({ job, onClose, onDone }: BrushEditorProps) 
             Cancelar
           </Button>
           <Button size="sm" onClick={handleSubmit}
-            disabled={isSubmitting || isSegmenting || !canvasReady}
+            disabled={isSubmitting || samAnalyzing || !canvasReady || !canSubmit}
             className="bg-red-600 hover:bg-red-700 text-white h-8 disabled:opacity-60">
             {isSubmitting
               ? <><div className="w-3 h-3 mr-1 border border-white border-t-transparent rounded-full animate-spin" />Removendo...</>
@@ -356,7 +444,7 @@ export default function BrushEditor({ job, onClose, onDone }: BrushEditorProps) 
 
       <p className="text-xs text-gray-500 mt-2 flex-shrink-0 text-center">
         {mode === 'click'
-          ? 'Clique diretamente sobre o objeto. Vários cliques acumulam seleções.'
+          ? 'Clique para selecionar. Clique novamente para desmarcar. Vários objetos podem ser selecionados.'
           : 'Pinte sobre as áreas. Use Desfazer para corrigir.'}
       </p>
     </div>

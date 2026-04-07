@@ -12,8 +12,8 @@ export async function POST(
 ) {
   const { id } = await params
   try {
-    const { mask, maskPublicUrl } = await request.json()
-    if (!mask && !maskPublicUrl) {
+    const { mask, maskPublicUrl, maskPaths } = await request.json()
+    if (!mask && !maskPublicUrl && (!maskPaths || maskPaths.length === 0)) {
       return Response.json({ error: 'Mask is required' }, { status: 400 })
     }
 
@@ -50,54 +50,84 @@ export async function POST(
 
     let finalMaskUrl: string
 
-    if (maskPublicUrl) {
-      // Click mode: download clean SAM mask, apply manual pixel-level dilation (+20px box),
-      // then re-upload. Manual dilation guarantees a hard binary mask — Sharp's blur+threshold
-      // pipeline produces a gradient that confuses LaMa.
-      const maskRes = await fetch(maskPublicUrl)
-      const rawMask = Buffer.from(await maskRes.arrayBuffer())
+    if (maskPaths && maskPaths.length > 0) {
+      // Download all selected SAM masks and combine with pixel OR
+      const allRaws = await Promise.all(
+        (maskPaths as string[]).map(async (path) => {
+          const { data, error } = await supabaseServer.storage.from('processed').download(path)
+          if (error || !data) return null
+          const buf = Buffer.from(await data.arrayBuffer())
+          const { data: raw } = await sharp(buf)
+            .resize(imgWidth, imgHeight, { fit: 'fill' })
+            .greyscale()
+            .raw()
+            .toBuffer({ resolveWithObject: true })
+          return raw as Buffer
+        })
+      )
 
-      // Get raw greyscale pixels
-      const { data: pixels, info } = await sharp(rawMask)
-        .greyscale()
-        .raw()
-        .toBuffer({ resolveWithObject: true })
+      // OR-combine
+      const combined = Buffer.alloc(imgWidth * imgHeight, 0)
+      for (const raw of allRaws) {
+        if (!raw) continue
+        for (let i = 0; i < raw.length; i++) {
+          if (raw[i] > 128) combined[i] = 255
+        }
+      }
 
-      const w = info.width
-      const h = info.height
-      const R = 20 // dilation radius in pixels
-
-      // Forward-mark dilation: for each white source pixel, mark all pixels
-      // within an R×R box as white in the output. Guaranteed binary output.
-      const dilated = Buffer.alloc(w * h, 0)
-      for (let y = 0; y < h; y++) {
-        for (let x = 0; x < w; x++) {
-          if (pixels[y * w + x] > 128) {
+      // Manual pixel dilation R=20
+      const R = 20
+      const dilated = Buffer.alloc(imgWidth * imgHeight, 0)
+      for (let y = 0; y < imgHeight; y++) {
+        for (let x = 0; x < imgWidth; x++) {
+          if (combined[y * imgWidth + x] > 128) {
             const yMin = Math.max(0, y - R)
-            const yMax = Math.min(h - 1, y + R)
+            const yMax = Math.min(imgHeight - 1, y + R)
             const xMin = Math.max(0, x - R)
-            const xMax = Math.min(w - 1, x + R)
+            const xMax = Math.min(imgWidth - 1, x + R)
             for (let ny = yMin; ny <= yMax; ny++) {
-              dilated.fill(255, ny * w + xMin, ny * w + xMax + 1)
+              dilated.fill(255, ny * imgWidth + xMin, ny * imgWidth + xMax + 1)
             }
           }
         }
       }
 
-      const dilatedMask = await sharp(dilated, { raw: { width: w, height: h, channels: 1 } })
+      const dilatedPng = await sharp(dilated, { raw: { width: imgWidth, height: imgHeight, channels: 1 } })
         .png()
         .toBuffer()
 
-      const dilatedPath = `${id}_mask.png`
-      await supabaseServer.storage.from('processed').upload(dilatedPath, dilatedMask, {
-        contentType: 'image/png',
-        upsert: true,
+      const uploadPath = `${id}_mask.png`
+      await supabaseServer.storage.from('processed').upload(uploadPath, dilatedPng, {
+        contentType: 'image/png', upsert: true,
       })
-      const { data: dilatedUrlData } = supabaseServer.storage.from('processed').getPublicUrl(dilatedPath)
-      finalMaskUrl = dilatedUrlData.publicUrl
+      const { data: urlData } = supabaseServer.storage.from('processed').getPublicUrl(uploadPath)
+      finalMaskUrl = urlData.publicUrl
+
+    } else if (maskPublicUrl) {
+      // Legacy single-mask URL path (kept for backward compat)
+      const maskRes = await fetch(maskPublicUrl as string)
+      const rawMask = Buffer.from(await maskRes.arrayBuffer())
+      const { data: pixels, info } = await sharp(rawMask).greyscale().raw().toBuffer({ resolveWithObject: true })
+      const w = info.width, h = info.height, R = 20
+      const dilated = Buffer.alloc(w * h, 0)
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          if ((pixels as Buffer)[y * w + x] > 128) {
+            const yMin = Math.max(0, y - R), yMax = Math.min(h - 1, y + R)
+            const xMin = Math.max(0, x - R), xMax = Math.min(w - 1, x + R)
+            for (let ny = yMin; ny <= yMax; ny++) dilated.fill(255, ny * w + xMin, ny * w + xMax + 1)
+          }
+        }
+      }
+      const dilatedPng = await sharp(dilated, { raw: { width: w, height: h, channels: 1 } }).png().toBuffer()
+      const uploadPath = `${id}_mask.png`
+      await supabaseServer.storage.from('processed').upload(uploadPath, dilatedPng, { contentType: 'image/png', upsert: true })
+      const { data: urlData } = supabaseServer.storage.from('processed').getPublicUrl(uploadPath)
+      finalMaskUrl = urlData.publicUrl
+
     } else {
       // Brush mode: canvas base64 → resize to image dims → slight smoothing → upload
-      const base64Data = mask.replace(/^data:image\/png;base64,/, '')
+      const base64Data = (mask as string).replace(/^data:image\/png;base64,/, '')
       const rawMaskBuffer = Buffer.from(base64Data, 'base64')
       const maskBuffer = await sharp(rawMaskBuffer)
         .resize(imgWidth, imgHeight, { fit: 'fill' })
