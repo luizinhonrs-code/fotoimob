@@ -88,55 +88,68 @@ export async function POST(
       return Response.json({ error: 'SAM não retornou masks. Tente novamente.' }, { status: 422 })
     }
 
-    // Download masks in batches of 6, stop as soon as one covers the click.
-    // SAM returns masks roughly smallest→largest, so the clicked object
-    // is usually found in the first 30 masks.
+    // Download first N masks. SAM returns smallest→largest so objects appear early.
     const BATCH = 6
-    let bestMaskBuf: Buffer | null = null
-    let bestArea = Infinity
+    const SCAN_LIMIT = Math.min(maskUrls.length, 48)
+    const allRaws: Buffer[] = []
 
-    for (let i = 0; i < maskUrls.length; i += BATCH) {
+    for (let i = 0; i < SCAN_LIMIT; i += BATCH) {
       const batch = maskUrls.slice(i, i + BATCH)
       const raws = await Promise.all(batch.map(url => fetchMaskRaw(url, imgW, imgH)))
-
-      for (const raw of raws) {
-        if (raw[clickIdx] > 128) {
-          // Count pixels to pick the most specific (smallest) matching mask
-          let area = 0
-          for (let j = 0; j < raw.length; j++) if (raw[j] > 128) area++
-          if (area < bestArea) { bestArea = area; bestMaskBuf = raw }
-        }
-      }
-
-      // Stop once we have a hit and have checked one extra batch
-      if (bestMaskBuf && i >= BATCH) break
+      allRaws.push(...raws)
     }
 
-    // Fallback: if no mask hit the click pixel, use closest centroid
-    if (!bestMaskBuf) {
-      const FALLBACK_LIMIT = Math.min(maskUrls.length, 30)
-      const raws = await Promise.all(
-        maskUrls.slice(0, FALLBACK_LIMIT).map(url => fetchMaskRaw(url, imgW, imgH))
-      )
+    // Compute area + centroid for every mask in one pass
+    interface MaskInfo { raw: Buffer; area: number; cx: number; cy: number }
+    const infos: MaskInfo[] = allRaws.map(raw => {
+      let area = 0, sx = 0, sy = 0
+      for (let y = 0; y < imgH; y++)
+        for (let x = 0; x < imgW; x++)
+          if (raw[y * imgW + x] > 128) { area++; sx += x; sy += y }
+      return { raw, area, cx: area > 0 ? sx / area : 0, cy: area > 0 ? sy / area : 0 }
+    })
+
+    // Primary: smallest mask that covers the click pixel
+    let primary: MaskInfo | null = null
+    for (const m of infos) {
+      if (m.raw[clickIdx] > 128 && m.area > 0) {
+        if (!primary || m.area < primary.area) primary = m
+      }
+    }
+
+    // Fallback: closest centroid to click (if no mask covered the pixel exactly)
+    if (!primary) {
       let bestDist = Infinity
-      for (const raw of raws) {
-        let sx = 0, sy = 0, count = 0
-        for (let y = 0; y < imgH; y++)
-          for (let x = 0; x < imgW; x++)
-            if (raw[y * imgW + x] > 128) { sx += x; sy += y; count++ }
-        if (count > 0) {
-          const dist = Math.sqrt((sx / count - px) ** 2 + (sy / count - py) ** 2)
-          if (dist < bestDist) { bestDist = dist; bestMaskBuf = raw }
-        }
+      for (const m of infos) {
+        if (m.area === 0) continue
+        const dist = Math.hypot(m.cx - px, m.cy - py)
+        if (dist < bestDist) { bestDist = dist; primary = m }
       }
     }
 
-    if (!bestMaskBuf) {
+    if (!primary) {
       return Response.json({ error: 'Nenhum objeto encontrado. Tente clicar no centro do objeto.' }, { status: 422 })
     }
 
-    // Resize winning mask to canvas size for overlay
-    const canvasMask = await sharp(bestMaskBuf, {
+    // Merge adjacent sub-parts: SAM often splits one object into several small masks.
+    // Merge all masks whose centroid is within 2× the object's estimated radius from
+    // the click point, provided they're not huge (e.g., the whole wall or floor).
+    const objRadius = Math.sqrt(primary.area / Math.PI) * 2
+    const maxMergeArea = primary.area * 10 // don't swallow objects far larger than primary
+    const merged = Buffer.from(primary.raw)  // start with primary, union others into it
+
+    for (const m of infos) {
+      if (m === primary || m.area === 0 || m.area > maxMergeArea) continue
+      const dist = Math.hypot(m.cx - px, m.cy - py)
+      if (dist <= objRadius) {
+        for (let j = 0; j < merged.length; j++) {
+          if (m.raw[j] > 128) merged[j] = 255
+        }
+      }
+    }
+
+    // Resize merged mask to canvas size for overlay
+    const canvasMask = await sharp(merged, {
       raw: { width: imgW, height: imgH, channels: 1 },
     })
       .resize(canvasWidth, canvasHeight, { fit: 'fill' })
