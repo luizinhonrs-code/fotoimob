@@ -51,8 +51,24 @@ export async function POST(
     let finalMaskUrl: string
 
     if (maskPublicUrl) {
-      // Click mode: use the clean binary SAM mask saved by segment — no reprocessing at all
-      finalMaskUrl = maskPublicUrl
+      // Click mode: download clean SAM mask, apply hard morphological dilation (+10px),
+      // then re-upload so LaMa has context beyond the object's exact boundary.
+      // blur(10)+threshold(1) expands edges ~10px with no interior blurring.
+      const maskRes = await fetch(maskPublicUrl)
+      const rawMask = Buffer.from(await maskRes.arrayBuffer())
+      const dilatedMask = await sharp(rawMask)
+        .greyscale()
+        .blur(10)
+        .threshold(1)
+        .png()
+        .toBuffer()
+      const dilatedPath = `${id}_mask.png`
+      await supabaseServer.storage.from('processed').upload(dilatedPath, dilatedMask, {
+        contentType: 'image/png',
+        upsert: true,
+      })
+      const { data: dilatedUrlData } = supabaseServer.storage.from('processed').getPublicUrl(dilatedPath)
+      finalMaskUrl = dilatedUrlData.publicUrl
     } else {
       // Brush mode: canvas base64 → resize to image dims → slight smoothing → upload
       const base64Data = mask.replace(/^data:image\/png;base64,/, '')
