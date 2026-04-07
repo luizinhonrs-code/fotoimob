@@ -12,8 +12,8 @@ export async function POST(
 ) {
   const { id } = await params
   try {
-    const { mask } = await request.json()
-    if (!mask) {
+    const { mask, maskPath } = await request.json()
+    if (!mask && !maskPath) {
       return Response.json({ error: 'Mask is required' }, { status: 400 })
     }
 
@@ -48,15 +48,33 @@ export async function POST(
     const imgWidth = imgMeta.width!
     const imgHeight = imgMeta.height!
 
-    // Decode mask from base64, resize to match image dimensions
-    const base64Data = mask.replace(/^data:image\/png;base64,/, '')
-    const rawMaskBuffer = Buffer.from(base64Data, 'base64')
-    const maskBuffer = await sharp(rawMaskBuffer)
-      .resize(imgWidth, imgHeight, { fit: 'fill' })
-      .blur(20)      // dilate white regions ~20px — LaMa needs margin to sample correct wall colour
-      .threshold(40) // re-binarize at lower threshold to capture expanded blurred edges
-      .png()
-      .toBuffer()
+    let maskBuffer: Buffer
+
+    if (maskPath) {
+      // Click mode: download full-resolution mask saved by segment route — no canvas round-trip
+      const { data: maskDownload, error: dlErr } = await supabaseServer.storage
+        .from('processed')
+        .download(maskPath)
+      if (dlErr || !maskDownload) throw new Error('Failed to download stored mask')
+      const rawMask = Buffer.from(await maskDownload.arrayBuffer())
+      // Small dilation only: expands edges a few px so LaMa blends cleanly
+      maskBuffer = await sharp(rawMask)
+        .resize(imgWidth, imgHeight, { fit: 'fill' })
+        .blur(8)
+        .threshold(100)
+        .png()
+        .toBuffer()
+    } else {
+      // Brush mode: canvas base64 → resize to image dims → light smoothing
+      const base64Data = mask.replace(/^data:image\/png;base64,/, '')
+      const rawMaskBuffer = Buffer.from(base64Data, 'base64')
+      maskBuffer = await sharp(rawMaskBuffer)
+        .resize(imgWidth, imgHeight, { fit: 'fill' })
+        .blur(5)
+        .threshold(128)
+        .png()
+        .toBuffer()
+    }
 
     const maskPath = `${id}_mask.png`
     await supabaseServer.storage.from('processed').upload(maskPath, maskBuffer, {

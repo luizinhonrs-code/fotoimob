@@ -24,6 +24,7 @@ export default function BrushEditor({ job, onClose, onDone }: BrushEditorProps) 
   const [isSegmenting, setIsSegmenting] = useState(false)
   const [canvasReady, setCanvasReady] = useState(false)
   const [clickDot, setClickDot] = useState<{ x: number; y: number } | null>(null)
+  const [storedMaskPath, setStoredMaskPath] = useState<string | null>(null)
   const lastPos = useRef<{ x: number; y: number } | null>(null)
 
   const imageUrl = job.decluttered_url || job.original_url
@@ -125,6 +126,7 @@ export default function BrushEditor({ job, onClose, onDone }: BrushEditorProps) 
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || 'Erro desconhecido')
       applyMaskToOverlay(data.mask)
+      if (data.maskPath) setStoredMaskPath(data.maskPath)
     } catch (err) {
       alert(`Erro: ${err instanceof Error ? err.message : err}`)
     } finally {
@@ -178,11 +180,36 @@ export default function BrushEditor({ job, onClose, onDone }: BrushEditorProps) 
     if (!paint) return
     saveHistory()
     paint.getContext('2d')!.clearRect(0, 0, paint.width, paint.height)
+    setStoredMaskPath(null)
   }
 
   const handleSubmit = async () => {
     const paint = paintRef.current
     if (!paint) return
+    setIsSubmitting(true)
+
+    // Click mode with stored server-side mask: send path directly (avoids lossy canvas round-trip)
+    if (mode === 'click' && storedMaskPath) {
+      try {
+        const res = await fetch(`/api/jobs/${job.id}/inpaint`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ maskPath: storedMaskPath }),
+        })
+        if (!res.ok) {
+          const err = await res.json()
+          throw new Error(err.error || 'Erro desconhecido')
+        }
+        onDone(); onClose()
+      } catch (err) {
+        alert(`Erro: ${err instanceof Error ? err.message : err}`)
+      } finally {
+        setIsSubmitting(false)
+      }
+      return
+    }
+
+    // Brush mode (or click fallback): build B&W mask from canvas overlay
     const mc = document.createElement('canvas')
     mc.width = paint.width; mc.height = paint.height
     const mCtx = mc.getContext('2d')!
@@ -197,7 +224,6 @@ export default function BrushEditor({ job, onClose, onDone }: BrushEditorProps) 
       }
     }
     mCtx.putImageData(md, 0, 0)
-    setIsSubmitting(true)
     try {
       const res = await fetch(`/api/jobs/${job.id}/inpaint`, {
         method: 'POST',

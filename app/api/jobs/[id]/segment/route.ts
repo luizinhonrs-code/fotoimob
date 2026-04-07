@@ -148,7 +148,22 @@ export async function POST(
       }
     }
 
-    // Resize merged mask to canvas size for overlay
+    // Upload full-resolution mask to Supabase so inpaint can use it directly
+    // (bypasses lossy canvas round-trip that collapses thin objects)
+    const fullResMask = await sharp(merged, {
+      raw: { width: imgW, height: imgH, channels: 1 },
+    })
+      .threshold(128)
+      .png()
+      .toBuffer()
+
+    const maskStoredPath = `${id}_click_mask.png`
+    await supabaseServer.storage.from('processed').upload(maskStoredPath, fullResMask, {
+      contentType: 'image/png',
+      upsert: true,
+    })
+
+    // Resize to canvas size only for the browser overlay display
     const canvasMask = await sharp(merged, {
       raw: { width: imgW, height: imgH, channels: 1 },
     })
@@ -159,6 +174,7 @@ export async function POST(
 
     return Response.json({
       mask: `data:image/png;base64,${canvasMask.toString('base64')}`,
+      maskPath: maskStoredPath,
     })
   } catch (err) {
     console.error('Segment error:', err)
