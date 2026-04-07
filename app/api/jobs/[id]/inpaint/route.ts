@@ -51,17 +51,43 @@ export async function POST(
     let finalMaskUrl: string
 
     if (maskPublicUrl) {
-      // Click mode: download clean SAM mask, apply hard morphological dilation (+10px),
-      // then re-upload so LaMa has context beyond the object's exact boundary.
-      // blur(10)+threshold(1) expands edges ~10px with no interior blurring.
+      // Click mode: download clean SAM mask, apply manual pixel-level dilation (+20px box),
+      // then re-upload. Manual dilation guarantees a hard binary mask — Sharp's blur+threshold
+      // pipeline produces a gradient that confuses LaMa.
       const maskRes = await fetch(maskPublicUrl)
       const rawMask = Buffer.from(await maskRes.arrayBuffer())
-      const dilatedMask = await sharp(rawMask)
+
+      // Get raw greyscale pixels
+      const { data: pixels, info } = await sharp(rawMask)
         .greyscale()
-        .blur(10)
-        .threshold(1)
+        .raw()
+        .toBuffer({ resolveWithObject: true })
+
+      const w = info.width
+      const h = info.height
+      const R = 20 // dilation radius in pixels
+
+      // Forward-mark dilation: for each white source pixel, mark all pixels
+      // within an R×R box as white in the output. Guaranteed binary output.
+      const dilated = Buffer.alloc(w * h, 0)
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          if (pixels[y * w + x] > 128) {
+            const yMin = Math.max(0, y - R)
+            const yMax = Math.min(h - 1, y + R)
+            const xMin = Math.max(0, x - R)
+            const xMax = Math.min(w - 1, x + R)
+            for (let ny = yMin; ny <= yMax; ny++) {
+              dilated.fill(255, ny * w + xMin, ny * w + xMax + 1)
+            }
+          }
+        }
+      }
+
+      const dilatedMask = await sharp(dilated, { raw: { width: w, height: h, channels: 1 } })
         .png()
         .toBuffer()
+
       const dilatedPath = `${id}_mask.png`
       await supabaseServer.storage.from('processed').upload(dilatedPath, dilatedMask, {
         contentType: 'image/png',
