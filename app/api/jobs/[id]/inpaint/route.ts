@@ -57,11 +57,15 @@ export async function POST(
         .download(maskPath)
       if (dlErr || !maskDownload) throw new Error('Failed to download stored mask')
       const rawMask = Buffer.from(await maskDownload.arrayBuffer())
-      // Small dilation only: expands edges a few px so LaMa blends cleanly
+      // Dilate mask so LaMa has context to blend edges cleanly.
+      // blur(15) expands ~15px beyond SAM edges, then threshold(60) binarises hard.
+      // normalise() first ensures full 0-255 range before threshold.
       maskBuffer = await sharp(rawMask)
         .resize(imgWidth, imgHeight, { fit: 'fill' })
-        .blur(8)
-        .threshold(100)
+        .normalise()
+        .blur(15)
+        .normalise()
+        .threshold(60)
         .png()
         .toBuffer()
     } else {
