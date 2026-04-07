@@ -24,7 +24,7 @@ export default function BrushEditor({ job, onClose, onDone }: BrushEditorProps) 
   const [isSegmenting, setIsSegmenting] = useState(false)
   const [canvasReady, setCanvasReady] = useState(false)
   const [clickDot, setClickDot] = useState<{ x: number; y: number } | null>(null)
-  const [storedMaskPath, setStoredMaskPath] = useState<string | null>(null)
+  const [storedMaskUrl, setStoredMaskUrl] = useState<string | null>(null)
   const lastPos = useRef<{ x: number; y: number } | null>(null)
 
   const imageUrl = job.decluttered_url || job.original_url
@@ -126,7 +126,7 @@ export default function BrushEditor({ job, onClose, onDone }: BrushEditorProps) 
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || 'Erro desconhecido')
       applyMaskToOverlay(data.mask)
-      if (data.maskPath) setStoredMaskPath(data.maskPath)
+      if (data.maskPublicUrl) setStoredMaskUrl(data.maskPublicUrl)
     } catch (err) {
       alert(`Erro: ${err instanceof Error ? err.message : err}`)
     } finally {
@@ -180,7 +180,7 @@ export default function BrushEditor({ job, onClose, onDone }: BrushEditorProps) 
     if (!paint) return
     saveHistory()
     paint.getContext('2d')!.clearRect(0, 0, paint.width, paint.height)
-    setStoredMaskPath(null)
+    setStoredMaskUrl(null)
   }
 
   const handleSubmit = async () => {
@@ -188,13 +188,13 @@ export default function BrushEditor({ job, onClose, onDone }: BrushEditorProps) 
     if (!paint) return
     setIsSubmitting(true)
 
-    // Click mode with stored server-side mask: send path directly (avoids lossy canvas round-trip)
-    if (mode === 'click' && storedMaskPath) {
+    // Click mode: send public URL of clean SAM-derived mask directly — no reprocessing
+    if (mode === 'click' && storedMaskUrl) {
       try {
         const res = await fetch(`/api/jobs/${job.id}/inpaint`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ maskPath: storedMaskPath }),
+          body: JSON.stringify({ maskPublicUrl: storedMaskUrl }),
         })
         if (!res.ok) {
           const err = await res.json()

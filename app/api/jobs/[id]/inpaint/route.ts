@@ -12,8 +12,8 @@ export async function POST(
 ) {
   const { id } = await params
   try {
-    const { mask, maskPath } = await request.json()
-    if (!mask && !maskPath) {
+    const { mask, maskPublicUrl } = await request.json()
+    if (!mask && !maskPublicUrl) {
       return Response.json({ error: 'Mask is required' }, { status: 400 })
     }
 
@@ -48,45 +48,29 @@ export async function POST(
     const imgWidth = imgMeta.width!
     const imgHeight = imgMeta.height!
 
-    let maskBuffer: Buffer
+    let finalMaskUrl: string
 
-    if (maskPath) {
-      // Click mode: download full-resolution mask saved by segment route — no canvas round-trip
-      const { data: maskDownload, error: dlErr } = await supabaseServer.storage
-        .from('processed')
-        .download(maskPath)
-      if (dlErr || !maskDownload) throw new Error('Failed to download stored mask')
-      const rawMask = Buffer.from(await maskDownload.arrayBuffer())
-      // Dilate mask so LaMa has context to blend edges cleanly.
-      // blur(15) expands ~15px beyond SAM edges, then threshold(60) binarises hard.
-      // normalise() first ensures full 0-255 range before threshold.
-      maskBuffer = await sharp(rawMask)
-        .resize(imgWidth, imgHeight, { fit: 'fill' })
-        .normalise()
-        .blur(15)
-        .normalise()
-        .threshold(60)
-        .png()
-        .toBuffer()
+    if (maskPublicUrl) {
+      // Click mode: use the clean binary SAM mask saved by segment — no reprocessing at all
+      finalMaskUrl = maskPublicUrl
     } else {
-      // Brush mode: canvas base64 → resize to image dims → light smoothing
+      // Brush mode: canvas base64 → resize to image dims → slight smoothing → upload
       const base64Data = mask.replace(/^data:image\/png;base64,/, '')
       const rawMaskBuffer = Buffer.from(base64Data, 'base64')
-      maskBuffer = await sharp(rawMaskBuffer)
+      const maskBuffer = await sharp(rawMaskBuffer)
         .resize(imgWidth, imgHeight, { fit: 'fill' })
         .blur(5)
         .threshold(128)
         .png()
         .toBuffer()
+      const uploadPath = `${id}_mask.png`
+      await supabaseServer.storage.from('processed').upload(uploadPath, maskBuffer, {
+        contentType: 'image/png',
+        upsert: true,
+      })
+      const { data: maskUrlData } = supabaseServer.storage.from('processed').getPublicUrl(uploadPath)
+      finalMaskUrl = maskUrlData.publicUrl
     }
-
-    const uploadPath = `${id}_mask.png`
-    await supabaseServer.storage.from('processed').upload(uploadPath, maskBuffer, {
-      contentType: 'image/png',
-      upsert: true,
-    })
-    const { data: maskUrlData } = supabaseServer.storage.from('processed').getPublicUrl(uploadPath)
-    const maskPublicUrl = maskUrlData.publicUrl
 
     // LaMa inpainting — use pinned version that is confirmed working
     const LAMA_VERSION = '0e3a841c913f597c1e4c321560aa69e2bc1f15c65f8c366caafc379240efd8ba'
@@ -95,7 +79,7 @@ export async function POST(
       version: LAMA_VERSION,
       input: {
         image: imageUrl,
-        mask: maskPublicUrl,
+        mask: finalMaskUrl,
       },
     })
 

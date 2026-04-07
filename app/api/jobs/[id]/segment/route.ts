@@ -162,6 +162,8 @@ export async function POST(
       contentType: 'image/png',
       upsert: true,
     })
+    const { data: maskUrlData } = supabaseServer.storage.from('processed').getPublicUrl(maskStoredPath)
+    const maskPublicUrl = maskUrlData.publicUrl
 
     // Resize to canvas size only for the browser overlay display
     const canvasMask = await sharp(merged, {
@@ -174,7 +176,7 @@ export async function POST(
 
     return Response.json({
       mask: `data:image/png;base64,${canvasMask.toString('base64')}`,
-      maskPath: maskStoredPath,
+      maskPublicUrl,
     })
   } catch (err) {
     console.error('Segment error:', err)
