@@ -89,13 +89,53 @@ export async function GET(
         // Save inpainted result
         const inpaintedUrl = await saveToProcessedBucket(outputUrl, `${id}_inpainted`)
 
-        // Mark done with inpainted result
-        await supabaseServer.from('jobs').update({
-          decluttered_url: inpaintedUrl,
-          status: 'done',
-          updated_at: new Date().toISOString(),
-        }).eq('id', id)
-        return Response.json({ ...job, status: 'done', decluttered_url: inpaintedUrl })
+        // Atomic transition to 'polishing': only one poll wins this race.
+        // Uses conditional update (only if still 'decluttering' AND enhance ID not yet set).
+        const { data: won } = await supabaseServer
+          .from('jobs')
+          .update({
+            decluttered_url: inpaintedUrl,
+            status: 'polishing',
+            replicate_id_enhance: 'pending', // placeholder — replaced below
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', id)
+          .eq('status', 'decluttering')
+          .is('replicate_id_enhance', null)
+          .select('id')
+
+        if (!won || won.length === 0) {
+          // Another poll already started enhancement — just return current state
+          return Response.json({ ...job, status: 'polishing', decluttered_url: inpaintedUrl })
+        }
+
+        // We won the race — start the enhancement prediction
+        try {
+          const enhModel = await replicate.models.get('nightmareai', 'real-esrgan')
+          const enhVersion = enhModel.latest_version?.id
+          if (!enhVersion) throw new Error('No enhancer version')
+          const enhPrediction = await replicate.predictions.create({
+            version: enhVersion,
+            input: {
+              image: inpaintedUrl,
+              scale: 2,
+              face_enhance: false,
+            },
+          })
+          await supabaseServer.from('jobs').update({
+            replicate_id_enhance: enhPrediction.id,
+            updated_at: new Date().toISOString(),
+          }).eq('id', id)
+          return Response.json({ ...job, status: 'polishing', decluttered_url: inpaintedUrl })
+        } catch {
+          // Enhancement failed to start — go straight to done
+          await supabaseServer.from('jobs').update({
+            status: 'done',
+            replicate_id_enhance: null,
+            updated_at: new Date().toISOString(),
+          }).eq('id', id)
+          return Response.json({ ...job, status: 'done', decluttered_url: inpaintedUrl })
+        }
       }
 
       // Still running
