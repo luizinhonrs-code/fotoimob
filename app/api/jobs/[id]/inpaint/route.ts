@@ -53,8 +53,8 @@ export async function POST(
     const rawMaskBuffer = Buffer.from(base64Data, 'base64')
     const maskBuffer = await sharp(rawMaskBuffer)
       .resize(imgWidth, imgHeight, { fit: 'fill' })
-      .blur(8)       // dilate white regions ~8px — covers full object even with partial SAM mask
-      .threshold(60) // re-binarize at lower threshold to capture expanded blurred edges
+      .blur(20)      // dilate white regions ~20px — LaMa needs margin to sample correct wall colour
+      .threshold(40) // re-binarize at lower threshold to capture expanded blurred edges
       .png()
       .toBuffer()
 
