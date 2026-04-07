@@ -187,26 +187,18 @@ export default function BrushEditor({ job, onClose, onDone }: BrushEditorProps) 
     })
   }, [mode, samMasks, samAnalyzing])
 
-  // Brush mode handlers
-  const saveHistory = useCallback(() => {
-    const paint = paintRef.current
-    if (!paint) return
-    const data = paint.getContext('2d')!.getImageData(0, 0, paint.width, paint.height)
-    setHistory(prev => [...prev.slice(-19), data])
-  }, [])
-
+  // Brush painting works in both modes — adds shadow/extras on top of click selections
   const startDraw = useCallback((e: React.MouseEvent | React.TouchEvent) => {
-    if (mode !== 'brush') return
     const paint = paintRef.current
     if (!paint) return
     e.preventDefault()
     saveHistory()
     setIsDrawing(true)
     lastPos.current = getPos(e, paint)
-  }, [mode, saveHistory])
+  }, [saveHistory])
 
   const draw = useCallback((e: React.MouseEvent | React.TouchEvent) => {
-    if (!isDrawing || mode !== 'brush') return
+    if (!isDrawing) return
     const paint = paintRef.current
     if (!paint) return
     e.preventDefault()
@@ -220,7 +212,15 @@ export default function BrushEditor({ job, onClose, onDone }: BrushEditorProps) 
     ctx.lineTo(pos.x, pos.y)
     ctx.stroke()
     lastPos.current = pos
-  }, [isDrawing, mode, brushSize])
+  }, [isDrawing, brushSize])
+
+  // Save canvas state for undo
+  const saveHistory = useCallback(() => {
+    const paint = paintRef.current
+    if (!paint) return
+    const data = paint.getContext('2d')!.getImageData(0, 0, paint.width, paint.height)
+    setHistory(prev => [...prev.slice(-19), data])
+  }, [])
 
   const stopDraw = useCallback(() => {
     setIsDrawing(false)
@@ -228,27 +228,25 @@ export default function BrushEditor({ job, onClose, onDone }: BrushEditorProps) 
   }, [])
 
   const undo = () => {
-    if (mode === 'click') {
-      // Undo last mask toggle
-      setSelectedIndices(prev => {
-        if (prev.size === 0) return prev
-        const arr = [...prev]
-        const next = new Set(arr.slice(0, -1))
-        return next
-      })
-      return
+    // Undo brush strokes first, then click selections
+    if (history.length > 0) {
+      const paint = paintRef.current
+      if (paint) {
+        paint.getContext('2d')!.putImageData(history[history.length - 1], 0, 0)
+        setHistory(h => h.slice(0, -1))
+        return
+      }
     }
-    const paint = paintRef.current
-    if (!paint || history.length === 0) return
-    paint.getContext('2d')!.putImageData(history[history.length - 1], 0, 0)
-    setHistory(h => h.slice(0, -1))
+    // No brush history — undo last click selection
+    setSelectedIndices(prev => {
+      if (prev.size === 0) return prev
+      const arr = [...prev]
+      return new Set(arr.slice(0, -1))
+    })
   }
 
   const clear = () => {
-    if (mode === 'click') {
-      setSelectedIndices(new Set())
-      return
-    }
+    setSelectedIndices(new Set())
     const paint = paintRef.current
     if (!paint) return
     saveHistory()
@@ -256,34 +254,11 @@ export default function BrushEditor({ job, onClose, onDone }: BrushEditorProps) 
   }
 
   const handleSubmit = async () => {
+    const paint = paintRef.current
+    if (!paint) return
     setIsSubmitting(true)
 
-    if (mode === 'click' && samMasks && selectedIndices.size > 0) {
-      const selectedPaths = [...selectedIndices]
-        .map(i => samMasks.find(m => m.index === i)?.storedPath)
-        .filter((p): p is string => !!p)
-      try {
-        const res = await fetch(`/api/jobs/${job.id}/inpaint`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ maskPaths: selectedPaths }),
-        })
-        if (!res.ok) {
-          const err = await res.json()
-          throw new Error(err.error || 'Erro desconhecido')
-        }
-        onDone(); onClose()
-      } catch (err) {
-        alert(`Erro: ${err instanceof Error ? err.message : err}`)
-      } finally {
-        setIsSubmitting(false)
-      }
-      return
-    }
-
-    // Brush mode: build mask from canvas overlay
-    const paint = paintRef.current
-    if (!paint) { setIsSubmitting(false); return }
+    // Build brush canvas mask (B&W PNG) from whatever was painted
     const mc = document.createElement('canvas')
     mc.width = paint.width; mc.height = paint.height
     const mCtx = mc.getContext('2d')!
@@ -297,11 +272,21 @@ export default function BrushEditor({ job, onClose, onDone }: BrushEditorProps) 
       }
     }
     mCtx.putImageData(md, 0, 0)
+    const brushMask = mc.toDataURL('image/png')
+
+    // SAM masks selected by click
+    const selectedPaths = samMasks
+      ? [...selectedIndices].map(i => samMasks.find(m => m.index === i)?.storedPath).filter((p): p is string => !!p)
+      : []
+
     try {
       const res = await fetch(`/api/jobs/${job.id}/inpaint`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mask: mc.toDataURL('image/png') }),
+        body: JSON.stringify({
+          maskPaths: selectedPaths.length > 0 ? selectedPaths : undefined,
+          mask: brushMask, // always send brush layer so server can OR-combine with SAM masks
+        }),
       })
       if (!res.ok) {
         const err = await res.json()
@@ -315,9 +300,13 @@ export default function BrushEditor({ job, onClose, onDone }: BrushEditorProps) 
     }
   }
 
-  const canSubmit = mode === 'click'
-    ? selectedIndices.size > 0
-    : true
+  const canSubmit = selectedIndices.size > 0 || (() => {
+    // Check if there's any brush paint on canvas
+    const paint = paintRef.current
+    if (!paint) return false
+    const data = paint.getContext('2d')!.getImageData(0, 0, paint.width, paint.height)
+    return data.data.some((v, i) => i % 4 === 3 && v > 10)
+  })()
 
   return (
     <div className="fixed inset-0 z-50 bg-black/95 flex flex-col items-center overflow-auto p-4 md:p-6">
@@ -329,9 +318,9 @@ export default function BrushEditor({ job, onClose, onDone }: BrushEditorProps) 
               ? samAnalyzing
                 ? 'Analisando imagem (~15s)...'
                 : samMasks
-                  ? `Clique para selecionar/desmarcar objetos • ${selectedIndices.size} selecionado${selectedIndices.size !== 1 ? 's' : ''}`
+                  ? `Clique para selecionar objetos • pinte as sombras com o pincel • ${selectedIndices.size} selecionado${selectedIndices.size !== 1 ? 's' : ''}`
                   : 'Clique no objeto — IA detecta o contorno'
-              : 'Pinte sobre os objetos que deseja remover'}
+              : 'Pinte sobre os objetos e sombras que deseja remover'}
           </p>
         </div>
         <button onClick={onClose} className="text-gray-400 hover:text-white p-1">
@@ -367,12 +356,12 @@ export default function BrushEditor({ job, onClose, onDone }: BrushEditorProps) 
           }}
           onClick={mode === 'click' ? handleClick : undefined}
           onTouchEnd={mode === 'click' ? handleClick : undefined}
-          onMouseDown={mode === 'brush' ? startDraw : undefined}
-          onMouseMove={mode === 'brush' ? draw : undefined}
+          onMouseDown={startDraw}
+          onMouseMove={draw}
           onMouseUp={stopDraw}
           onMouseLeave={stopDraw}
-          onTouchStart={mode === 'brush' ? startDraw : undefined}
-          onTouchMove={mode === 'brush' ? draw : undefined}
+          onTouchStart={startDraw}
+          onTouchMove={draw}
         />
 
         {/* SAM analyzing overlay */}
@@ -405,8 +394,7 @@ export default function BrushEditor({ job, onClose, onDone }: BrushEditorProps) 
 
       {/* Controls */}
       <div className="w-full max-w-5xl mt-3 flex flex-wrap items-center gap-2 flex-shrink-0">
-        {mode === 'brush' && (
-          <div className="flex items-center gap-1.5 bg-gray-800 rounded-lg px-2.5 py-1.5">
+        <div className="flex items-center gap-1.5 bg-gray-800 rounded-lg px-2.5 py-1.5">
             <button onClick={() => setBrushSize(s => Math.max(5, s - 5))} className="text-gray-300 hover:text-white">
               <Minus className="w-3.5 h-3.5" />
             </button>
@@ -415,7 +403,6 @@ export default function BrushEditor({ job, onClose, onDone }: BrushEditorProps) 
               <Plus className="w-3.5 h-3.5" />
             </button>
           </div>
-        )}
 
         <Button size="sm" variant="outline" onClick={undo}
           disabled={mode === 'click' ? selectedIndices.size === 0 : history.length === 0}
@@ -444,8 +431,8 @@ export default function BrushEditor({ job, onClose, onDone }: BrushEditorProps) 
 
       <p className="text-xs text-gray-500 mt-2 flex-shrink-0 text-center">
         {mode === 'click'
-          ? 'Clique para selecionar. Clique novamente para desmarcar. Vários objetos podem ser selecionados.'
-          : 'Pinte sobre as áreas. Use Desfazer para corrigir.'}
+          ? 'Clique nos objetos para selecionar/desmarcar. Use o pincel para adicionar sombras à seleção.'
+          : 'Pinte sobre objetos e sombras. Use Desfazer para corrigir.'}
       </p>
     </div>
   )

@@ -66,7 +66,7 @@ export async function POST(
         })
       )
 
-      // OR-combine
+      // OR-combine SAM masks
       const combined = Buffer.alloc(imgWidth * imgHeight, 0)
       for (const raw of allRaws) {
         if (!raw) continue
@@ -75,9 +75,23 @@ export async function POST(
         }
       }
 
-      // Manual pixel dilation R=20
+      // Also OR-combine brush canvas mask if provided (shadows painted by user)
+      if (mask) {
+        const base64Data = (mask as string).replace(/^data:image\/png;base64,/, '')
+        const brushBuf = Buffer.from(base64Data, 'base64')
+        const { data: brushRaw } = await sharp(brushBuf)
+          .resize(imgWidth, imgHeight, { fit: 'fill' })
+          .greyscale()
+          .raw()
+          .toBuffer({ resolveWithObject: true })
+        for (let i = 0; i < (brushRaw as Buffer).length; i++) {
+          if ((brushRaw as Buffer)[i] > 10) combined[i] = 255
+        }
+      }
+
+      // Manual pixel dilation R=20 on SAM areas only (brush areas already have user margin)
       const R = 20
-      const dilated = Buffer.alloc(imgWidth * imgHeight, 0)
+      const dilated = Buffer.from(combined) // start with combined (brush areas already included)
       for (let y = 0; y < imgHeight; y++) {
         for (let x = 0; x < imgWidth; x++) {
           if (combined[y * imgWidth + x] > 128) {
