@@ -60,6 +60,10 @@ export default function Home() {
     setJobs((prev) => [...newJobs, ...prev])
   }
 
+  const handleJobDelete = (jobId: string) => {
+    setJobs((prev) => prev.filter((j) => j.id !== jobId))
+  }
+
   const hasActiveJobs = jobs.some(
     (j) => j.status === 'enhancing' || j.status === 'decluttering' || j.status === 'polishing'
   )
@@ -96,7 +100,7 @@ export default function Home() {
             <div className="w-8 h-8 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
           </div>
         ) : (
-          <PhotoGrid jobs={jobs} onJobsUpdate={fetchJobs} />
+          <PhotoGrid jobs={jobs} onJobsUpdate={fetchJobs} onJobDelete={handleJobDelete} />
         )}
 
         {!loading && jobs.length === 0 && (

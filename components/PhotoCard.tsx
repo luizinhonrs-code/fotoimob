@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import Image from 'next/image'
-import { Download, Play, RotateCcw, ImageIcon, Paintbrush } from 'lucide-react'
+import { Download, Play, RotateCcw, ImageIcon, Paintbrush, Trash2 } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -12,6 +12,7 @@ import BrushEditor from './BrushEditor'
 interface PhotoCardProps {
   job: Job
   onProcess: (jobId: string) => void
+  onDelete: (jobId: string) => void
   onJobsUpdate: () => void
   isStarting?: boolean
 }
@@ -53,9 +54,24 @@ function StatusBadge({ status }: { status: Job['status'] }) {
   }
 }
 
-export default function PhotoCard({ job, onProcess, onJobsUpdate, isStarting }: PhotoCardProps) {
+export default function PhotoCard({ job, onProcess, onDelete, onJobsUpdate, isStarting }: PhotoCardProps) {
   const [showOriginal, setShowOriginal] = useState(false)
   const [showBrush, setShowBrush] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+
+  const handleDelete = async () => {
+    if (!confirm('Excluir esta foto? A ação não pode ser desfeita.')) return
+    setDeleting(true)
+    try {
+      const res = await fetch(`/api/jobs/${job.id}`, { method: 'DELETE' })
+      if (!res.ok) throw new Error('Falha ao excluir')
+      onDelete(job.id)
+    } catch (err) {
+      console.error('Delete failed:', err)
+      alert('Erro ao excluir a foto.')
+      setDeleting(false)
+    }
+  }
 
   const displayName = job.original_filename
     .replace(/^\d+_/, '')
@@ -107,6 +123,20 @@ export default function PhotoCard({ job, onProcess, onJobsUpdate, isStarting }: 
               <ImageIcon className="w-8 h-8 text-gray-600" />
             </div>
           )}
+
+          {/* Delete button — visible on hover */}
+          <button
+            onClick={handleDelete}
+            disabled={deleting || isProcessing}
+            className="absolute top-2 right-2 p-1.5 rounded-md bg-black/60 text-gray-300 opacity-0 group-hover:opacity-100 hover:bg-red-600 hover:text-white transition-all disabled:opacity-30 disabled:pointer-events-none"
+            title="Excluir foto"
+          >
+            {deleting ? (
+              <div className="w-3.5 h-3.5 border border-current border-t-transparent rounded-full animate-spin" />
+            ) : (
+              <Trash2 className="w-3.5 h-3.5" />
+            )}
+          </button>
 
           {/* Before/after toggle */}
           {job.status === 'done' && finalUrl && (
