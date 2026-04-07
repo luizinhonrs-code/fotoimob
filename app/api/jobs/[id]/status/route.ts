@@ -89,12 +89,17 @@ export async function GET(
         // Save inpainted result
         const inpaintedUrl = await saveToProcessedBucket(outputUrl, `${id}_inpainted`)
 
-        // Atomic transition to 'polishing': only one poll wins this race.
-        // Uses conditional update (only if still 'decluttering' AND enhance ID not yet set).
+        // Step 1: Always persist the inpainted URL unconditionally so it is never lost.
+        await supabaseServer.from('jobs').update({
+          decluttered_url: inpaintedUrl,
+          updated_at: new Date().toISOString(),
+        }).eq('id', id)
+
+        // Step 2: Atomic lock — only the first poll that wins transitions to 'polishing'.
+        // Condition: still 'decluttering' AND no enhancement ID yet set.
         const { data: won } = await supabaseServer
           .from('jobs')
           .update({
-            decluttered_url: inpaintedUrl,
             status: 'polishing',
             replicate_id_enhance: 'pending', // placeholder — replaced below
             updated_at: new Date().toISOString(),
