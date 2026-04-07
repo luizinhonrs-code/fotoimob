@@ -76,12 +76,12 @@ export async function POST(
         .toBuffer()
     }
 
-    const maskPath = `${id}_mask.png`
-    await supabaseServer.storage.from('processed').upload(maskPath, maskBuffer, {
+    const uploadPath = `${id}_mask.png`
+    await supabaseServer.storage.from('processed').upload(uploadPath, maskBuffer, {
       contentType: 'image/png',
       upsert: true,
     })
-    const { data: maskUrlData } = supabaseServer.storage.from('processed').getPublicUrl(maskPath)
+    const { data: maskUrlData } = supabaseServer.storage.from('processed').getPublicUrl(uploadPath)
     const maskPublicUrl = maskUrlData.publicUrl
 
     // LaMa inpainting — use pinned version that is confirmed working
