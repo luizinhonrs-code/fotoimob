@@ -86,31 +86,30 @@ export async function GET(
           outputUrl = job.original_url
         }
 
-        // Save inpainted result
+        // Save inpainted result to our bucket
         const inpaintedUrl = await saveToProcessedBucket(outputUrl, `${id}_inpainted`)
 
-        // Step 1: Always persist the inpainted URL unconditionally so it is never lost.
+        // Step 1: Always save URL + transition status atomically (safe to repeat — WHERE limits to 'decluttering' only).
         await supabaseServer.from('jobs').update({
           decluttered_url: inpaintedUrl,
+          status: 'polishing',
           updated_at: new Date().toISOString(),
-        }).eq('id', id)
+        }).eq('id', id).eq('status', 'decluttering')
 
-        // Step 2: Atomic lock — only the first poll that wins transitions to 'polishing'.
-        // Condition: still 'decluttering' AND no enhancement ID yet set.
+        // Step 2: Separate enhancement lock — only the first poll that sees null enhance ID starts it.
         const { data: won } = await supabaseServer
           .from('jobs')
           .update({
-            status: 'polishing',
             replicate_id_enhance: 'pending', // placeholder — replaced below
             updated_at: new Date().toISOString(),
           })
           .eq('id', id)
-          .eq('status', 'decluttering')
+          .eq('status', 'polishing')
           .is('replicate_id_enhance', null)
           .select('id')
 
         if (!won || won.length === 0) {
-          // Another poll already started enhancement — just return current state
+          // Another poll already claimed the enhancement slot
           return Response.json({ ...job, status: 'polishing', decluttered_url: inpaintedUrl })
         }
 
@@ -133,7 +132,7 @@ export async function GET(
           }).eq('id', id)
           return Response.json({ ...job, status: 'polishing', decluttered_url: inpaintedUrl })
         } catch {
-          // Enhancement failed to start — go straight to done
+          // Enhancement failed to start — go straight to done with inpainted result
           await supabaseServer.from('jobs').update({
             status: 'done',
             replicate_id_enhance: null,
@@ -148,7 +147,9 @@ export async function GET(
     }
 
     // Polishing stage — quality enhancement running
-    if (job.status === 'polishing' && job.replicate_id_enhance) {
+    // Guard: 'pending' is a placeholder set during the window between lock acquisition and real ID write.
+    // Calling replicate.predictions.get('pending') would throw, so we just wait it out.
+    if (job.status === 'polishing' && job.replicate_id_enhance && job.replicate_id_enhance !== 'pending') {
       const enhancePrediction = await replicate.predictions.get(job.replicate_id_enhance)
 
       if (enhancePrediction.status === 'failed' || enhancePrediction.status === 'canceled') {
