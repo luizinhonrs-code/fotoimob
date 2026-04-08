@@ -34,7 +34,7 @@ export async function POST(request: NextRequest) {
         try {
           const response = await fetch(url)
           if (!response.ok) return
-          const arrayBuffer = await response.arrayBuffer()
+          const arrayBuffer = await response.arrayBuffer() as ArrayBuffer
           let imgBuffer = Buffer.from(arrayBuffer)
 
           if (applyPreset) {
