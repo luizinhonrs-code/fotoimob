@@ -52,9 +52,9 @@ export async function POST(request: NextRequest) {
       })
     )
 
-    const zipBuffer = await zip.generateAsync({ type: 'nodebuffer' })
+    const zipBytes = await zip.generateAsync({ type: 'uint8array' })
 
-    return new Response(zipBuffer, {
+    return new Response(zipBytes, {
       headers: {
         'Content-Type': 'application/zip',
         'Content-Disposition': 'attachment; filename="fotoimob_processadas.zip"',
