@@ -28,35 +28,43 @@ export async function POST(request: NextRequest) {
 
     await Promise.all(
       jobs.map(async (job, index) => {
-        const url = job.decluttered_url ?? job.ai_edited_url ?? job.original_url
+        const url = (job.decluttered_url ?? job.ai_edited_url ?? job.original_url) as string | null
         if (!url) return
 
         try {
           const response = await fetch(url)
           if (!response.ok) return
+
+          // Use Sharp's own fetch+pipeline to avoid Buffer generic issues
           const rawBytes = new Uint8Array(await response.arrayBuffer())
 
-          const imgBuffer = applyPreset
-            ? await sharp(rawBytes)
-                .modulate({ brightness, saturation, hue })
-                .linear(linearA, linearB)
-                .jpeg({ quality: 92 })
-                .toBuffer()
-            : Buffer.from(rawBytes)
+          let finalBytes: Uint8Array
+          if (applyPreset) {
+            const processed = await sharp(rawBytes)
+              .modulate({ brightness, saturation, hue })
+              .linear(linearA, linearB)
+              .jpeg({ quality: 92 })
+              .toBuffer({ resolveWithObject: false })
+            // Sharp toBuffer returns Buffer which extends Uint8Array — safe copy
+            finalBytes = new Uint8Array(processed)
+          } else {
+            finalBytes = rawBytes
+          }
 
           const name = `foto_${String(index + 1).padStart(2, '0')}.jpg`
-          zip.file(name, imgBuffer)
+          zip.file(name, finalBytes)
         } catch (err) {
           console.error(`Failed to process job ${job.id}:`, err)
         }
       })
     )
 
-    const zipBytes = await zip.generateAsync({ type: 'uint8array' })
-    const zipBlob = new Blob([zipBytes], { type: 'application/zip' })
+    // generateAsync with arraybuffer avoids JSZip's Buffer<ArrayBufferLike> generics
+    const zipArrayBuffer = await zip.generateAsync({ type: 'arraybuffer' }) as ArrayBuffer
 
-    return new Response(zipBlob, {
+    return new Response(zipArrayBuffer, {
       headers: {
+        'Content-Type': 'application/zip',
         'Content-Disposition': 'attachment; filename="fotoimob_processadas.zip"',
       },
     })
