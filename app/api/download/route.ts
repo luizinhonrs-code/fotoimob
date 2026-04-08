@@ -53,10 +53,10 @@ export async function POST(request: NextRequest) {
     )
 
     const zipBytes = await zip.generateAsync({ type: 'uint8array' })
+    const zipBlob = new Blob([zipBytes], { type: 'application/zip' })
 
-    return new Response(zipBytes, {
+    return new Response(zipBlob, {
       headers: {
-        'Content-Type': 'application/zip',
         'Content-Disposition': 'attachment; filename="fotoimob_processadas.zip"',
       },
     })
