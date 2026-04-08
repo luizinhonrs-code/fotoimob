@@ -17,10 +17,21 @@ export type Job = {
   original_url: string
   enhanced_url: string | null
   decluttered_url: string | null
-  status: 'pending' | 'enhancing' | 'decluttering' | 'polishing' | 'done' | 'error'
+  ai_edited_url: string | null
+  status:
+    | 'pending'
+    | 'enhancing'     // legacy
+    | 'editing'       // p-image-edit running
+    | 'upscaling'     // p-image-upscale running
+    | 'decluttering'  // legacy / manual inpaint
+    | 'polishing'     // legacy
+    | 'done'
+    | 'error'
   replicate_id_enhance: string | null
   replicate_id_sam: string | null
   replicate_id_inpaint: string | null
+  replicate_id_edit: string | null
+  replicate_id_upscale: string | null
   error_message: string | null
   created_at: string
   updated_at: string

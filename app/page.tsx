@@ -20,7 +20,12 @@ export default function Home() {
 
         // For active jobs, call status endpoint to advance the pipeline
         const activeJobs = allJobs.filter(
-          (j) => j.status === 'enhancing' || j.status === 'decluttering' || j.status === 'polishing'
+          (j) =>
+            j.status === 'enhancing' ||
+            j.status === 'editing' ||
+            j.status === 'upscaling' ||
+            j.status === 'decluttering' ||
+            j.status === 'polishing'
         )
 
         if (activeJobs.length > 0) {
@@ -65,7 +70,12 @@ export default function Home() {
   }
 
   const hasActiveJobs = jobs.some(
-    (j) => j.status === 'enhancing' || j.status === 'decluttering' || j.status === 'polishing'
+    (j) =>
+      j.status === 'enhancing' ||
+      j.status === 'editing' ||
+      j.status === 'upscaling' ||
+      j.status === 'decluttering' ||
+      j.status === 'polishing'
   )
 
   return (

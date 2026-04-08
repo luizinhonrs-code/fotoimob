@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import Image from 'next/image'
-import { Download, Play, RotateCcw, ImageIcon, Paintbrush, Trash2 } from 'lucide-react'
+import { Download, Play, RotateCcw, ImageIcon, Paintbrush, Trash2, Check } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -15,6 +15,8 @@ interface PhotoCardProps {
   onDelete: (jobId: string) => void
   onJobsUpdate: () => void
   isStarting?: boolean
+  isSelected?: boolean
+  onToggleSelect?: (jobId: string) => void
 }
 
 function StatusBadge({ status }: { status: Job['status'] }) {
@@ -25,6 +27,18 @@ function StatusBadge({ status }: { status: Job['status'] }) {
       return (
         <Badge className="bg-blue-500/20 text-blue-300 border border-blue-500/40 animate-pulse">
           Detectando...
+        </Badge>
+      )
+    case 'editing':
+      return (
+        <Badge className="bg-blue-500/20 text-blue-300 border border-blue-500/40 animate-pulse">
+          Editando...
+        </Badge>
+      )
+    case 'upscaling':
+      return (
+        <Badge className="bg-amber-500/20 text-amber-300 border border-amber-500/40 animate-pulse">
+          Ampliando...
         </Badge>
       )
     case 'decluttering':
@@ -54,24 +68,18 @@ function StatusBadge({ status }: { status: Job['status'] }) {
   }
 }
 
-export default function PhotoCard({ job, onProcess, onDelete, onJobsUpdate, isStarting }: PhotoCardProps) {
+export default function PhotoCard({
+  job,
+  onProcess,
+  onDelete,
+  onJobsUpdate,
+  isStarting,
+  isSelected,
+  onToggleSelect,
+}: PhotoCardProps) {
   const [showOriginal, setShowOriginal] = useState(false)
   const [showBrush, setShowBrush] = useState(false)
   const [deleting, setDeleting] = useState(false)
-
-  const handleDelete = async () => {
-    if (!confirm('Excluir esta foto? A ação não pode ser desfeita.')) return
-    setDeleting(true)
-    try {
-      const res = await fetch(`/api/jobs/${job.id}`, { method: 'DELETE' })
-      if (!res.ok) throw new Error('Falha ao excluir')
-      onDelete(job.id)
-    } catch (err) {
-      console.error('Delete failed:', err)
-      alert('Erro ao excluir a foto.')
-      setDeleting(false)
-    }
-  }
 
   const displayName = job.original_filename
     .replace(/^\d+_/, '')
@@ -79,12 +87,17 @@ export default function PhotoCard({ job, onProcess, onDelete, onJobsUpdate, isSt
 
   const displayUrl =
     job.status === 'done' && !showOriginal
-      ? (job.decluttered_url || job.enhanced_url || job.original_url)
+      ? (job.decluttered_url || job.ai_edited_url || job.enhanced_url || job.original_url)
       : job.original_url
 
-  const finalUrl = job.decluttered_url || job.enhanced_url
+  const finalUrl = job.decluttered_url || job.ai_edited_url || job.enhanced_url
 
-  const isProcessing = job.status === 'enhancing' || job.status === 'decluttering' || job.status === 'polishing'
+  const isProcessing =
+    job.status === 'enhancing' ||
+    job.status === 'editing' ||
+    job.status === 'upscaling' ||
+    job.status === 'decluttering' ||
+    job.status === 'polishing'
 
   const handleDownload = async () => {
     if (!finalUrl) return
@@ -102,6 +115,20 @@ export default function PhotoCard({ job, onProcess, onDelete, onJobsUpdate, isSt
       URL.revokeObjectURL(url)
     } catch (err) {
       console.error('Download failed:', err)
+    }
+  }
+
+  const handleDelete = async () => {
+    if (!confirm('Excluir esta foto? A ação não pode ser desfeita.')) return
+    setDeleting(true)
+    try {
+      const res = await fetch(`/api/jobs/${job.id}`, { method: 'DELETE' })
+      if (!res.ok) throw new Error('Falha ao excluir')
+      onDelete(job.id)
+    } catch (err) {
+      console.error('Delete failed:', err)
+      alert('Erro ao excluir a foto.')
+      setDeleting(false)
     }
   }
 
@@ -124,7 +151,22 @@ export default function PhotoCard({ job, onProcess, onDelete, onJobsUpdate, isSt
             </div>
           )}
 
-          {/* Delete button — visible on hover */}
+          {/* Selection checkbox — top left */}
+          {onToggleSelect && (
+            <button
+              onClick={(e) => { e.stopPropagation(); onToggleSelect(job.id) }}
+              className={`absolute top-2 left-2 w-5 h-5 rounded border-2 flex items-center justify-center transition-all
+                ${isSelected
+                  ? 'bg-blue-500 border-blue-400'
+                  : 'bg-black/50 border-white/70 opacity-0 group-hover:opacity-100'
+                }`}
+              title={isSelected ? 'Desselecionar' : 'Selecionar para editar com IA'}
+            >
+              {isSelected && <Check className="w-3 h-3 text-white" />}
+            </button>
+          )}
+
+          {/* Delete button — top right */}
           <button
             onClick={handleDelete}
             disabled={deleting || isProcessing}

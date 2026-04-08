@@ -8,7 +8,7 @@ create table if not exists jobs (
   original_url text not null,
   enhanced_url text,
   decluttered_url text,
-  status text default 'pending' check (status in ('pending', 'enhancing', 'decluttering', 'done', 'error')),
+  status text default 'pending' check (status in ('pending', 'enhancing', 'decluttering', 'polishing', 'done', 'error')),
   replicate_id_enhance text,
   replicate_id_sam text,
   replicate_id_inpaint text,
