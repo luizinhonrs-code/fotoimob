@@ -34,16 +34,15 @@ export async function POST(request: NextRequest) {
         try {
           const response = await fetch(url)
           if (!response.ok) return
-          const arrayBuffer = await response.arrayBuffer() as ArrayBuffer
-          let imgBuffer = Buffer.from(arrayBuffer)
+          const rawBytes = new Uint8Array(await response.arrayBuffer())
 
-          if (applyPreset) {
-            imgBuffer = await sharp(imgBuffer)
-              .modulate({ brightness, saturation, hue })
-              .linear(linearA, linearB)
-              .jpeg({ quality: 92 })
-              .toBuffer()
-          }
+          const imgBuffer = applyPreset
+            ? await sharp(rawBytes)
+                .modulate({ brightness, saturation, hue })
+                .linear(linearA, linearB)
+                .jpeg({ quality: 92 })
+                .toBuffer()
+            : Buffer.from(rawBytes)
 
           const name = `foto_${String(index + 1).padStart(2, '0')}.jpg`
           zip.file(name, imgBuffer)
