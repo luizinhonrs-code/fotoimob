@@ -141,8 +141,10 @@ export default function TestLightingPage() {
   const onDrop = useCallback(
     async (acceptedFiles: File[]) => {
       setProcessing(true)
-      // Processa todas em paralelo
-      await Promise.all(acceptedFiles.map(processFile))
+      // Sequencial — evita rate limit do Replicate (burst: 5 req/min com < $10)
+      for (const file of acceptedFiles) {
+        await processFile(file)
+      }
       setProcessing(false)
     },
     [processFile]
