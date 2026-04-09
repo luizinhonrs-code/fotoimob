@@ -4,10 +4,11 @@ import { useState, useCallback } from 'react'
 import { useDropzone } from 'react-dropzone'
 
 type ExposureLevel = 'very_dark' | 'dark' | 'normal' | 'bright' | 'very_bright'
+type ResultStatus = 'processing' | 'done' | 'skipped' | 'error'
 
 interface Result {
   file: string
-  status: 'processing' | 'done' | 'skipped' | 'error'
+  status: ResultStatus
   exposure?: {
     luminance: number
     level: ExposureLevel
@@ -29,66 +30,109 @@ const LEVEL_LABEL: Record<ExposureLevel, string> = {
 }
 
 const LEVEL_COLOR: Record<ExposureLevel, string> = {
-  very_dark: 'bg-gray-800 text-white',
+  very_dark: 'bg-gray-700 text-white',
   dark: 'bg-gray-600 text-white',
   normal: 'bg-blue-600 text-white',
-  bright: 'bg-yellow-500 text-white',
+  bright: 'bg-yellow-500 text-black',
   very_bright: 'bg-orange-500 text-white',
+}
+
+async function pollUntilDone(
+  predictionId: string,
+  storagePath: string,
+  onDone: (enhancedUrl: string) => void,
+  onError: (msg: string) => void
+) {
+  const INTERVAL = 4000
+  const MAX_ATTEMPTS = 60 // 4 min
+
+  for (let i = 0; i < MAX_ATTEMPTS; i++) {
+    await new Promise((r) => setTimeout(r, INTERVAL))
+    try {
+      const res = await fetch(
+        `/api/test-lighting/${predictionId}?storagePath=${encodeURIComponent(storagePath)}`
+      )
+      const data = await res.json()
+
+      if (data.status === 'done') {
+        onDone(data.enhancedUrl)
+        return
+      }
+      if (data.status === 'error' || data.error) {
+        onError(data.error || 'Erro desconhecido')
+        return
+      }
+      // starting | processing → continua polling
+    } catch {
+      // ignora erros de rede temporários
+    }
+  }
+  onError('Timeout — modelo demorou mais de 4 minutos')
 }
 
 export default function TestLightingPage() {
   const [results, setResults] = useState<Result[]>([])
   const [processing, setProcessing] = useState(false)
 
-  const processFile = useCallback(async (file: File) => {
-    const id = file.name
-
-    // Adiciona entrada de processando
-    setResults((prev) => [
-      { file: id, status: 'processing' },
-      ...prev,
-    ])
-
-    try {
-      const form = new FormData()
-      form.append('file', file)
-
-      const res = await fetch('/api/test-lighting', { method: 'POST', body: form })
-      const data = await res.json()
-
-      if (!res.ok) throw new Error(data.error || 'Erro desconhecido')
-
-      setResults((prev) =>
-        prev.map((r) =>
-          r.file === id
-            ? {
-                file: id,
-                status: data.skipped ? 'skipped' : 'done',
-                exposure: data.exposure,
-                originalUrl: data.originalUrl,
-                enhancedUrl: data.enhancedUrl,
-                message: data.message,
-              }
-            : r
-        )
-      )
-    } catch (e) {
-      setResults((prev) =>
-        prev.map((r) =>
-          r.file === id
-            ? { file: id, status: 'error', error: e instanceof Error ? e.message : 'Erro' }
-            : r
-        )
-      )
-    }
+  const updateResult = useCallback((file: string, patch: Partial<Result>) => {
+    setResults((prev) =>
+      prev.map((r) => (r.file === file ? { ...r, ...patch } : r))
+    )
   }, [])
+
+  const processFile = useCallback(
+    async (file: File) => {
+      const id = file.name
+
+      setResults((prev) => [{ file: id, status: 'processing' }, ...prev])
+
+      try {
+        const form = new FormData()
+        form.append('file', file)
+
+        const res = await fetch('/api/test-lighting', { method: 'POST', body: form })
+        const data = await res.json()
+
+        if (!res.ok) throw new Error(data.error || 'Erro desconhecido')
+
+        // Foto clara — pulou a IA
+        if (data.status === 'skipped') {
+          updateResult(id, {
+            status: 'skipped',
+            exposure: data.exposure,
+            originalUrl: data.originalUrl,
+            message: data.message,
+          })
+          return
+        }
+
+        // Iniciou processamento — começa polling
+        updateResult(id, {
+          exposure: data.exposure,
+          originalUrl: data.originalUrl,
+        })
+
+        await pollUntilDone(
+          data.predictionId,
+          data.storagePath,
+          (enhancedUrl) => updateResult(id, { status: 'done', enhancedUrl }),
+          (error) => updateResult(id, { status: 'error', error })
+        )
+      } catch (e) {
+        updateResult(id, {
+          status: 'error',
+          error: e instanceof Error ? e.message : 'Erro',
+        })
+      }
+    },
+    [updateResult]
+  )
 
   const onDrop = useCallback(
     async (acceptedFiles: File[]) => {
       setProcessing(true)
-      for (const file of acceptedFiles) {
-        await processFile(file)
-      }
+      // Processa todas em paralelo
+      await Promise.all(acceptedFiles.map(processFile))
       setProcessing(false)
     },
     [processFile]
@@ -120,26 +164,26 @@ export default function TestLightingPage() {
             <table className="w-full text-left">
               <thead>
                 <tr className="text-gray-500 border-b border-gray-800">
-                  <th className="pb-2 pr-4">Luminância</th>
-                  <th className="pb-2 pr-4">Nível</th>
-                  <th className="pb-2 pr-4">Passa pelo bread?</th>
-                  <th className="pb-2 pr-4">Gamma</th>
+                  <th className="pb-2 pr-6">Luminância</th>
+                  <th className="pb-2 pr-6">Nível</th>
+                  <th className="pb-2 pr-6">Passa pelo bread?</th>
+                  <th className="pb-2 pr-6">Gamma</th>
                   <th className="pb-2">Strength</th>
                 </tr>
               </thead>
               <tbody className="text-gray-300">
                 {[
-                  { range: '< 70', level: 'Muito escura', ai: true,  gamma: 0.9,  strength: 0.02 },
-                  { range: '70–105', level: 'Escura',     ai: true,  gamma: 0.8,  strength: 0.02 },
-                  { range: '105–140', level: 'Normal',    ai: true,  gamma: 0.6,  strength: 0.01 },
-                  { range: '140–175', level: 'Clara',     ai: true,  gamma: 0.4,  strength: 0 },
-                  { range: '> 175', level: 'Muito clara', ai: false, gamma: '—',  strength: '—' },
+                  { range: '< 70',    level: 'Muito escura', ai: true,  gamma: 0.9, strength: 0.02 },
+                  { range: '70–105',  level: 'Escura',       ai: true,  gamma: 0.8, strength: 0.02 },
+                  { range: '105–140', level: 'Normal',       ai: true,  gamma: 0.6, strength: 0.01 },
+                  { range: '140–175', level: 'Clara',        ai: true,  gamma: 0.4, strength: 0    },
+                  { range: '> 175',   level: 'Muito clara',  ai: false, gamma: '—', strength: '—'  },
                 ].map((row) => (
                   <tr key={row.range} className="border-b border-gray-800/50">
-                    <td className="py-1.5 pr-4 font-mono">{row.range}</td>
-                    <td className="py-1.5 pr-4">{row.level}</td>
-                    <td className="py-1.5 pr-4">{row.ai ? '✅' : '❌'}</td>
-                    <td className="py-1.5 pr-4 font-mono">{row.gamma}</td>
+                    <td className="py-1.5 pr-6 font-mono">{row.range}</td>
+                    <td className="py-1.5 pr-6">{row.level}</td>
+                    <td className="py-1.5 pr-6">{row.ai ? '✅' : '❌'}</td>
+                    <td className="py-1.5 pr-6 font-mono">{row.gamma}</td>
                     <td className="py-1.5 font-mono">{row.strength}</td>
                   </tr>
                 ))}
@@ -163,7 +207,7 @@ export default function TestLightingPage() {
           </p>
           <p className="text-gray-500 text-sm mt-1">JPG, PNG, WEBP — múltiplas fotos suportadas</p>
           {processing && (
-            <p className="text-blue-400 text-sm mt-2 animate-pulse">⏳ Processando...</p>
+            <p className="text-blue-400 text-sm mt-2 animate-pulse">⏳ Processando em paralelo...</p>
           )}
         </div>
 
@@ -182,6 +226,7 @@ export default function TestLightingPage() {
 
             {results.map((r, i) => (
               <div key={i} className="bg-gray-900 rounded-xl p-4 space-y-3">
+
                 {/* Nome + status */}
                 <div className="flex items-center gap-3">
                   <span className="font-mono text-sm text-gray-300 truncate flex-1">{r.file}</span>
@@ -201,34 +246,26 @@ export default function TestLightingPage() {
 
                 {/* Análise de exposição */}
                 {r.exposure && (
-                  <div className="flex items-center gap-3 text-sm">
+                  <div className="flex flex-wrap items-center gap-3 text-sm">
                     <span className="text-gray-500">Luminância:</span>
-                    <span className="font-mono font-bold text-white">{r.exposure.luminance}</span>
-                    <span
-                      className={`px-2 py-0.5 rounded-full text-xs font-medium ${LEVEL_COLOR[r.exposure.level]}`}
-                    >
+                    <span className="font-mono font-bold">{r.exposure.luminance}</span>
+                    <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${LEVEL_COLOR[r.exposure.level]}`}>
                       {LEVEL_LABEL[r.exposure.level]}
                     </span>
                     {r.exposure.needsAI && (
                       <>
                         <span className="text-gray-600">→</span>
-                        <span className="text-gray-400 font-mono">
-                          gamma {r.exposure.breadParams.gamma} / strength {r.exposure.breadParams.strength}
+                        <span className="text-gray-400 font-mono text-xs">
+                          γ={r.exposure.breadParams.gamma} · s={r.exposure.breadParams.strength}
                         </span>
                       </>
                     )}
                   </div>
                 )}
 
-                {/* Mensagem de skip */}
-                {r.message && (
-                  <p className="text-yellow-300 text-sm">{r.message}</p>
-                )}
-
-                {/* Erro */}
-                {r.error && (
-                  <p className="text-red-400 text-sm">{r.error}</p>
-                )}
+                {/* Mensagem skip / erro */}
+                {r.message && <p className="text-yellow-300 text-sm">{r.message}</p>}
+                {r.error   && <p className="text-red-400 text-sm">{r.error}</p>}
 
                 {/* Comparação antes/depois */}
                 {r.originalUrl && r.enhancedUrl && (
@@ -236,27 +273,17 @@ export default function TestLightingPage() {
                     <div className="space-y-1">
                       <p className="text-xs text-gray-500 uppercase tracking-wide">Original</p>
                       {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img
-                        src={r.originalUrl}
-                        alt="Original"
-                        className="w-full rounded-lg object-cover aspect-[4/3]"
-                      />
+                      <img src={r.originalUrl} alt="Original" className="w-full rounded-lg object-cover aspect-[4/3]" />
                     </div>
                     <div className="space-y-1">
                       <p className="text-xs text-gray-500 uppercase tracking-wide">
-                        Após bread
+                        Após bread&nbsp;
                         {r.exposure && (
-                          <span className="ml-1 text-blue-400 normal-case">
-                            (γ={r.exposure.breadParams.gamma})
-                          </span>
+                          <span className="text-blue-400 normal-case">(γ={r.exposure.breadParams.gamma})</span>
                         )}
                       </p>
                       {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img
-                        src={r.enhancedUrl}
-                        alt="Melhorado"
-                        className="w-full rounded-lg object-cover aspect-[4/3]"
-                      />
+                      <img src={r.enhancedUrl} alt="Melhorado" className="w-full rounded-lg object-cover aspect-[4/3]" />
                     </div>
                   </div>
                 )}
@@ -266,11 +293,7 @@ export default function TestLightingPage() {
                   <div className="space-y-1">
                     <p className="text-xs text-gray-500 uppercase tracking-wide">Foto (sem alteração)</p>
                     {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img
-                      src={r.originalUrl}
-                      alt="Original"
-                      className="w-full max-w-sm rounded-lg object-cover aspect-[4/3]"
-                    />
+                    <img src={r.originalUrl} alt="Original" className="w-full max-w-sm rounded-lg aspect-[4/3] object-cover" />
                   </div>
                 )}
               </div>

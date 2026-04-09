@@ -4,7 +4,7 @@ import { replicate } from '@/lib/replicate'
 import { supabaseServer } from '@/lib/supabase'
 
 export const runtime = 'nodejs'
-export const maxDuration = 60
+export const maxDuration = 30
 
 export async function POST(request: NextRequest) {
   try {
@@ -20,7 +20,8 @@ export async function POST(request: NextRequest) {
 
     // 2. Upload para o bucket processed (temporário, prefixo test_)
     const timestamp = Date.now()
-    const storagePath = `test_${timestamp}_${file.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`
+    const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_')
+    const storagePath = `test_${timestamp}_${safeName}`
 
     const { error: uploadError } = await supabaseServer.storage
       .from('processed')
@@ -31,18 +32,18 @@ export async function POST(request: NextRequest) {
     const { data: urlData } = supabaseServer.storage.from('processed').getPublicUrl(storagePath)
     const originalUrl = urlData.publicUrl
 
-    // 3. Se não precisa de AI, retorna só a análise
+    // 3. Se não precisa de AI, retorna imediatamente
     if (!exposure.needsAI) {
       return Response.json({
+        status: 'skipped',
         exposure,
         originalUrl,
         enhancedUrl: null,
-        skipped: true,
         message: `Foto já bem iluminada (L: ${exposure.luminance}) — bread não aplicado`,
       })
     }
 
-    // 4. Chama mingcv/bread com os parâmetros automáticos
+    // 4. Cria predição e retorna imediatamente (async)
     const prediction = await replicate.predictions.create({
       version: 'bf9f60e777852145e9e6c06fac109c6d55fec43bd535b6b13d3608c34711060b',
       input: {
@@ -52,42 +53,12 @@ export async function POST(request: NextRequest) {
       },
     })
 
-    // 5. Polling até concluir (max 55s)
-    let result = prediction
-    const deadline = Date.now() + 55_000
-    while (
-      result.status !== 'succeeded' &&
-      result.status !== 'failed' &&
-      result.status !== 'canceled' &&
-      Date.now() < deadline
-    ) {
-      await new Promise((r) => setTimeout(r, 3000))
-      result = await replicate.predictions.get(prediction.id)
-    }
-
-    if (result.status !== 'succeeded') {
-      throw new Error(`bread failed: ${result.error ?? result.status}`)
-    }
-
-    const outputUrl = Array.isArray(result.output) ? result.output[0] : result.output
-
-    // 6. Salva resultado no bucket
-    const enhancedPath = `test_${timestamp}_enhanced_${file.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`
-    const imgRes = await fetch(outputUrl)
-    const imgBuffer = Buffer.from(await imgRes.arrayBuffer())
-
-    await supabaseServer.storage
-      .from('processed')
-      .upload(enhancedPath, imgBuffer, { contentType: 'image/jpeg', upsert: false })
-
-    const { data: enhUrlData } = supabaseServer.storage.from('processed').getPublicUrl(enhancedPath)
-
     return Response.json({
+      status: 'processing',
+      predictionId: prediction.id,
       exposure,
       originalUrl,
-      enhancedUrl: enhUrlData.publicUrl,
-      skipped: false,
-      breadParams: exposure.breadParams,
+      storagePath: `test_${timestamp}_enhanced_${safeName}`,
     })
   } catch (error) {
     console.error('test-lighting error:', error)
