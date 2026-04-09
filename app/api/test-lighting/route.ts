@@ -44,7 +44,7 @@ export async function POST(request: NextRequest) {
 
     // 4. Chama mingcv/bread com os parâmetros automáticos
     const prediction = await replicate.predictions.create({
-      model: 'mingcv/bread',
+      version: 'bf9f60e777852145e9e6c06fac109c6d55fec43bd535b6b13d3608c34711060b',
       input: {
         image: originalUrl,
         gamma: exposure.breadParams.gamma,
