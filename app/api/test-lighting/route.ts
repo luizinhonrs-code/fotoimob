@@ -6,20 +6,20 @@ import { supabaseServer } from '@/lib/supabase'
 export const runtime = 'nodejs'
 export const maxDuration = 30
 
-const CLIP_VERSION = '056324d6fb78878c1016e432a3827fa76950022848c5378681dd99b7dc7dcc24'
+const CLIP_VERSION = '566ab1f111e526640c5154e712d4d54961414278f89d36590f1425badc763ecb'
 const CLIP_TEXT = [
-  'living room interior',
-  'bedroom interior with bed',
-  'kitchen interior with cabinets',
-  'bathroom interior with sink or toilet',
-  'balcony or terrace outdoor',
-  'building facade exterior street view',
-  'garage or parking area',
-  'laundry room or service area',
-  'corridor or hallway interior',
-  'home office or study room',
-  'dining room with table and chairs',
-  'swimming pool outdoor',
+  'living room interior with sofa couch and television',
+  'bedroom interior with bed mattress and pillows',
+  'kitchen interior with stove oven refrigerator and cabinets',
+  'bathroom interior with toilet sink shower or bathtub',
+  'open balcony terrace with railing outdoors',
+  'building exterior facade front view street',
+  'garage parking area with car or gate',
+  'laundry service room with washing machine',
+  'narrow corridor hallway entrance hall interior',
+  'home office study room with desk computer',
+  'dining room with dining table and chairs',
+  'swimming pool outdoor area',
 ].join(' | ')
 
 export async function POST(request: NextRequest) {

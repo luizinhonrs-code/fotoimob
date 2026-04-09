@@ -1,58 +1,57 @@
 /**
- * Detecção de cômodo via CLIP zero-shot (lucataco/clip-vit-base-patch32)
+ * Detecção de cômodo via CLIP zero-shot
+ * Modelo: cjwbw/clip-vit-large-patch14 (ViT-L — mais preciso que base-patch32)
  * Custo: ~$0.0023/imagem no Replicate
  */
 
 import { replicate } from '@/lib/replicate'
 
-const CLIP_VERSION = '056324d6fb78878c1016e432a3827fa76950022848c5378681dd99b7dc7dcc24'
+// ViT-L/14 — maior e mais preciso que o base-patch32
+const CLIP_VERSION = '566ab1f111e526640c5154e712d4d54961414278f89d36590f1425badc763ecb'
 
-// Labels em inglês (CLIP tem melhor acurácia em inglês)
-// Mapeadas para PT-BR no display
+// Labels mais descritivos para reduzir confusão entre cômodos similares
 const ROOM_LABELS: Record<string, string> = {
-  'living room interior':                    'Sala de estar',
-  'bedroom interior with bed':               'Quarto',
-  'kitchen interior with cabinets':          'Cozinha',
-  'bathroom interior with sink or toilet':   'Banheiro',
-  'balcony or terrace outdoor':              'Varanda',
-  'building facade exterior street view':    'Fachada',
-  'garage or parking area':                  'Garagem',
-  'laundry room or service area':            'Área de serviço',
-  'corridor or hallway interior':            'Corredor',
-  'home office or study room':               'Escritório',
-  'dining room with table and chairs':       'Sala de jantar',
-  'swimming pool outdoor':                   'Piscina',
+  'living room interior with sofa couch and television':         'Sala de estar',
+  'bedroom interior with bed mattress and pillows':             'Quarto',
+  'kitchen interior with stove oven refrigerator and cabinets': 'Cozinha',
+  'bathroom interior with toilet sink shower or bathtub':       'Banheiro',
+  'open balcony terrace with railing outdoors':                 'Varanda',
+  'building exterior facade front view street':                 'Fachada',
+  'garage parking area with car or gate':                       'Garagem',
+  'laundry service room with washing machine':                  'Área de serviço',
+  'narrow corridor hallway entrance hall interior':             'Corredor',
+  'home office study room with desk computer':                  'Escritório',
+  'dining room with dining table and chairs':                   'Sala de jantar',
+  'swimming pool outdoor area':                                 'Piscina',
 }
 
 export interface RoomResult {
   label: string        // PT-BR
   labelEn: string      // inglês original
-  confidence: number   // 0-1
+  confidence: number   // 0–100
   isExterior: boolean
 }
 
 const EXTERIOR_LABELS = new Set([
-  'balcony or terrace outdoor',
-  'building facade exterior street view',
-  'garage or parking area',
-  'swimming pool outdoor',
+  'open balcony terrace with railing outdoors',
+  'building exterior facade front view street',
+  'garage parking area with car or gate',
+  'swimming pool outdoor area',
 ])
 
+const LABEL_KEYS = Object.keys(ROOM_LABELS)
+
 export async function detectRoom(imageUrl: string): Promise<RoomResult> {
-  const labels = Object.keys(ROOM_LABELS)
-  const text = labels.join(' | ')
+  const text = LABEL_KEYS.join(' | ')
 
   const output = await replicate.run(
-    `lucataco/clip-vit-base-patch32:${CLIP_VERSION}` as `${string}/${string}:${string}`,
+    `cjwbw/clip-vit-large-patch14:${CLIP_VERSION}` as `${string}/${string}:${string}`,
     { input: { image: imageUrl, text } }
   )
 
-  // Output: array de scores na mesma ordem dos labels
   const scores = output as number[]
-
-  // Encontra o label com maior score
   const maxIdx = scores.reduce((best, s, i) => (s > scores[best] ? i : best), 0)
-  const labelEn = labels[maxIdx]
+  const labelEn = LABEL_KEYS[maxIdx]
 
   return {
     label: ROOM_LABELS[labelEn],

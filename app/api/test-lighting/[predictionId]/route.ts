@@ -8,25 +8,25 @@ export const maxDuration = 30
 const BREAD_VERSION = 'bf9f60e777852145e9e6c06fac109c6d55fec43bd535b6b13d3608c34711060b'
 
 const ROOM_LABELS: Record<string, string> = {
-  'living room interior':                    'Sala de estar',
-  'bedroom interior with bed':               'Quarto',
-  'kitchen interior with cabinets':          'Cozinha',
-  'bathroom interior with sink or toilet':   'Banheiro',
-  'balcony or terrace outdoor':              'Varanda',
-  'building facade exterior street view':    'Fachada',
-  'garage or parking area':                  'Garagem',
-  'laundry room or service area':            'Área de serviço',
-  'corridor or hallway interior':            'Corredor',
-  'home office or study room':               'Escritório',
-  'dining room with table and chairs':       'Sala de jantar',
-  'swimming pool outdoor':                   'Piscina',
+  'living room interior with sofa couch and television':         'Sala de estar',
+  'bedroom interior with bed mattress and pillows':             'Quarto',
+  'kitchen interior with stove oven refrigerator and cabinets': 'Cozinha',
+  'bathroom interior with toilet sink shower or bathtub':       'Banheiro',
+  'open balcony terrace with railing outdoors':                 'Varanda',
+  'building exterior facade front view street':                 'Fachada',
+  'garage parking area with car or gate':                       'Garagem',
+  'laundry service room with washing machine':                  'Área de serviço',
+  'narrow corridor hallway entrance hall interior':             'Corredor',
+  'home office study room with desk computer':                  'Escritório',
+  'dining room with dining table and chairs':                   'Sala de jantar',
+  'swimming pool outdoor area':                                 'Piscina',
 }
 
 const EXTERIOR_LABELS = new Set([
-  'balcony or terrace outdoor',
-  'building facade exterior street view',
-  'garage or parking area',
-  'swimming pool outdoor',
+  'open balcony terrace with railing outdoors',
+  'building exterior facade front view street',
+  'garage parking area with car or gate',
+  'swimming pool outdoor area',
 ])
 
 const LABEL_KEYS = Object.keys(ROOM_LABELS)
