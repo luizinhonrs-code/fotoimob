@@ -47,32 +47,27 @@ export async function checkExposure(inputBytes: Uint8Array | Buffer): Promise<Ex
   let gamma: number
   let strength: number
 
-  if (luminance < 70) {
-    // Muito escura — model clareia bastante, gamma 0.9 controla sem estourar
+  if (luminance < 80) {
     level = 'very_dark'
     needsAI = true
     gamma = 0.9
     strength = 0.02
   } else if (luminance < 105) {
-    // Escura — leve redução de gamma
     level = 'dark'
     needsAI = true
     gamma = 0.8
     strength = 0.02
   } else if (luminance < 140) {
-    // Normal — gamma mais conservador
     level = 'normal'
     needsAI = true
     gamma = 0.6
     strength = 0.01
-  } else if (luminance < 175) {
-    // Clara — gamma baixo para não estourar, sem denoising
+  } else if (luminance < 160) {
     level = 'bright'
     needsAI = true
     gamma = 0.4
     strength = 0
   } else {
-    // Muito clara — não processar
     level = 'very_bright'
     needsAI = false
     gamma = 1.0

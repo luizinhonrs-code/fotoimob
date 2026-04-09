@@ -173,11 +173,11 @@ export default function TestLightingPage() {
               </thead>
               <tbody className="text-gray-300">
                 {[
-                  { range: '< 70',    level: 'Muito escura', ai: true,  gamma: 0.9, strength: 0.02 },
-                  { range: '70–105',  level: 'Escura',       ai: true,  gamma: 0.8, strength: 0.02 },
+                  { range: '< 80',    level: 'Muito escura', ai: true,  gamma: 0.9, strength: 0.02 },
+                  { range: '80–105',  level: 'Escura',       ai: true,  gamma: 0.8, strength: 0.02 },
                   { range: '105–140', level: 'Normal',       ai: true,  gamma: 0.6, strength: 0.01 },
-                  { range: '140–175', level: 'Clara',        ai: true,  gamma: 0.4, strength: 0    },
-                  { range: '> 175',   level: 'Muito clara',  ai: false, gamma: '—', strength: '—'  },
+                  { range: '140–160', level: 'Clara',        ai: true,  gamma: 0.4, strength: 0    },
+                  { range: '> 160',   level: 'Muito clara',  ai: false, gamma: '—', strength: '—'  },
                 ].map((row) => (
                   <tr key={row.range} className="border-b border-gray-800/50">
                     <td className="py-1.5 pr-6 font-mono">{row.range}</td>
