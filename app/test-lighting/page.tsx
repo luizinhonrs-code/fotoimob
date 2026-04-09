@@ -45,37 +45,66 @@ const LEVEL_COLOR: Record<ExposureLevel, string> = {
   very_bright: 'bg-orange-500 text-white',
 }
 
-async function pollUntilDone(
-  predictionId: string,
-  storagePath: string,
-  onDone: (enhancedUrl: string) => void,
+async function pollPhases(
+  clipId: string,
+  originalUrl: string,
+  enhancedPath: string,
+  gamma: number,
+  strength: number,
+  onRoom: (room: RoomResult) => void,
+  onDone: (enhancedUrl: string | null, skipped: boolean, message?: string) => void,
   onError: (msg: string) => void
 ) {
   const INTERVAL = 4000
-  const MAX_ATTEMPTS = 60 // 4 min
+  const MAX_ATTEMPTS = 75 // 5 min
+
+  let phase = 'clip'
+  let currentId = clipId
 
   for (let i = 0; i < MAX_ATTEMPTS; i++) {
     await new Promise((r) => setTimeout(r, INTERVAL))
     try {
-      const res = await fetch(
-        `/api/test-lighting/${predictionId}?storagePath=${encodeURIComponent(storagePath)}`
-      )
-      const data = await res.json()
+      const qs = new URLSearchParams({
+        phase,
+        originalUrl,
+        enhancedPath,
+        gamma: String(gamma),
+        strength: String(strength),
+      })
+      const res = await fetch(`/api/test-lighting/${currentId}?${qs}`)
+      if (!res.ok) continue // ignora erros temporários de rede
 
-      if (data.status === 'done') {
-        onDone(data.enhancedUrl)
+      const data = await res.json()
+      if (data.error && !data.phase) { onError(data.error); return }
+
+      // CLIP concluiu → bread foi disparado
+      if (data.phase === 'bread' && data.breadId) {
+        if (data.room) onRoom(data.room)
+        phase = 'bread'
+        currentId = data.breadId
+        continue
+      }
+
+      // Pulado (exterior ou bem iluminado)
+      if (data.phase === 'done' && data.status === 'skipped') {
+        if (data.room) onRoom(data.room)
+        onDone(null, true, data.message)
         return
       }
-      if (data.status === 'error' || data.error) {
-        onError(data.error || 'Erro desconhecido')
+
+      // Bread concluiu
+      if (data.phase === 'done' && data.status === 'done') {
+        onDone(data.enhancedUrl, false)
         return
       }
-      // starting | processing → continua polling
+
+      if (data.status === 'error') { onError(data.error || 'Erro'); return }
+      // starting | processing → continua
     } catch {
-      // ignora erros de rede temporários
+      // ignora erros temporários
     }
   }
-  onError('Timeout — modelo demorou mais de 4 minutos')
+  onError('Timeout — processo demorou mais de 5 minutos')
 }
 
 export default function TestLightingPage() {
@@ -103,29 +132,25 @@ export default function TestLightingPage() {
 
         if (!res.ok) throw new Error(data.error || 'Erro desconhecido')
 
-        // Foto clara ou exterior — pulou a IA
-        if (data.status === 'skipped') {
-          updateResult(id, {
-            status: 'skipped',
-            exposure: data.exposure,
-            room: data.room,
-            originalUrl: data.originalUrl,
-            message: data.message,
-          })
-          return
-        }
-
-        // Iniciou processamento — começa polling
+        // Fase CLIP disparada — atualiza com exposição e começa polling
         updateResult(id, {
           exposure: data.exposure,
-          room: data.room,
           originalUrl: data.originalUrl,
         })
 
-        await pollUntilDone(
-          data.predictionId,
-          data.storagePath,
-          (enhancedUrl) => updateResult(id, { status: 'done', enhancedUrl }),
+        await pollPhases(
+          data.clipId,
+          data.originalUrl,
+          data.enhancedPath,
+          data.exposure.breadParams.gamma,
+          data.exposure.breadParams.strength,
+          (room) => updateResult(id, { room }),
+          (enhancedUrl, skipped, message) =>
+            updateResult(id, {
+              status: skipped ? 'skipped' : 'done',
+              enhancedUrl: enhancedUrl ?? undefined,
+              message,
+            }),
           (error) => updateResult(id, { status: 'error', error })
         )
       } catch (e) {
