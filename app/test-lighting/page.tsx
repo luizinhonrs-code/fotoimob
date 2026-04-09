@@ -6,6 +6,13 @@ import { useDropzone } from 'react-dropzone'
 type ExposureLevel = 'very_dark' | 'dark' | 'normal' | 'bright' | 'very_bright'
 type ResultStatus = 'processing' | 'done' | 'skipped' | 'error'
 
+interface RoomResult {
+  label: string
+  labelEn: string
+  confidence: number
+  isExterior: boolean
+}
+
 interface Result {
   file: string
   status: ResultStatus
@@ -15,6 +22,7 @@ interface Result {
     needsAI: boolean
     breadParams: { gamma: number; strength: number }
   }
+  room?: RoomResult
   originalUrl?: string
   enhancedUrl?: string
   message?: string
@@ -95,11 +103,12 @@ export default function TestLightingPage() {
 
         if (!res.ok) throw new Error(data.error || 'Erro desconhecido')
 
-        // Foto clara — pulou a IA
+        // Foto clara ou exterior — pulou a IA
         if (data.status === 'skipped') {
           updateResult(id, {
             status: 'skipped',
             exposure: data.exposure,
+            room: data.room,
             originalUrl: data.originalUrl,
             message: data.message,
           })
@@ -109,6 +118,7 @@ export default function TestLightingPage() {
         // Iniciou processamento — começa polling
         updateResult(id, {
           exposure: data.exposure,
+          room: data.room,
           originalUrl: data.originalUrl,
         })
 
@@ -243,6 +253,22 @@ export default function TestLightingPage() {
                     <span className="text-red-400 text-sm">❌ Erro</span>
                   )}
                 </div>
+
+                {/* Cômodo detectado */}
+                {r.room && (
+                  <div className="flex items-center gap-2 text-sm">
+                    <span className="text-gray-500">
+                      {r.room.isExterior ? '🏠' : '🛋️'}
+                    </span>
+                    <span className="font-medium text-white">{r.room.label}</span>
+                    <span className="text-gray-500 text-xs">{r.room.confidence}% confiança</span>
+                    {r.room.isExterior && (
+                      <span className="text-xs bg-orange-900 text-orange-300 px-2 py-0.5 rounded-full">
+                        exterior
+                      </span>
+                    )}
+                  </div>
+                )}
 
                 {/* Análise de exposição */}
                 {r.exposure && (

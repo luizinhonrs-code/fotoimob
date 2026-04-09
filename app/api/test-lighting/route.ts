@@ -1,5 +1,6 @@
 import { NextRequest } from 'next/server'
 import { checkExposure } from '@/lib/exposure-check'
+import { detectRoom } from '@/lib/room-detect'
 import { replicate } from '@/lib/replicate'
 import { supabaseServer } from '@/lib/supabase'
 
@@ -15,10 +16,7 @@ export async function POST(request: NextRequest) {
 
     const bytes = new Uint8Array(await file.arrayBuffer())
 
-    // 1. Analisa exposição
-    const exposure = await checkExposure(bytes)
-
-    // 2. Upload para o bucket processed (temporário, prefixo test_)
+    // 1. Upload primeiro (necessário para CLIP precisar de URL pública)
     const timestamp = Date.now()
     const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_')
     const storagePath = `test_${timestamp}_${safeName}`
@@ -32,18 +30,37 @@ export async function POST(request: NextRequest) {
     const { data: urlData } = supabaseServer.storage.from('processed').getPublicUrl(storagePath)
     const originalUrl = urlData.publicUrl
 
-    // 3. Se não precisa de AI, retorna imediatamente
+    // 2. Exposição + CLIP em paralelo
+    const [exposure, room] = await Promise.all([
+      checkExposure(bytes),
+      detectRoom(originalUrl),
+    ])
+
+    // 3. Exterior — pula bread independente da luminância
+    if (room.isExterior) {
+      return Response.json({
+        status: 'skipped',
+        exposure,
+        room,
+        originalUrl,
+        enhancedUrl: null,
+        message: `Exterior detectado (${room.label}, ${room.confidence}%) — bread não aplicado`,
+      })
+    }
+
+    // 4. Interior mas já bem iluminado — pula bread
     if (!exposure.needsAI) {
       return Response.json({
         status: 'skipped',
         exposure,
+        room,
         originalUrl,
         enhancedUrl: null,
-        message: `Foto já bem iluminada (L: ${exposure.luminance}) — bread não aplicado`,
+        message: `${room.label} bem iluminado (L: ${exposure.luminance}) — bread não aplicado`,
       })
     }
 
-    // 4. Cria predição e retorna imediatamente (async)
+    // 5. Cria predição bread e retorna imediatamente
     const prediction = await replicate.predictions.create({
       version: 'bf9f60e777852145e9e6c06fac109c6d55fec43bd535b6b13d3608c34711060b',
       input: {
@@ -57,6 +74,7 @@ export async function POST(request: NextRequest) {
       status: 'processing',
       predictionId: prediction.id,
       exposure,
+      room,
       originalUrl,
       storagePath: `test_${timestamp}_enhanced_${safeName}`,
     })
