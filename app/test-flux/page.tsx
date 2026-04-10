@@ -6,13 +6,23 @@ import { useDropzone } from 'react-dropzone'
 type Preset = 'vivido' | 'quente'
 type Status = 'processing' | 'done' | 'error'
 
+type Intensity = 'low' | 'medium' | 'high'
+
 interface Result {
   file: string
   preset: Preset
   status: Status
   originalUrl?: string
   resultUrl?: string
+  luminance?: number
+  intensity?: Intensity
   error?: string
+}
+
+const INTENSITY_LABEL: Record<Intensity, { label: string; color: string }> = {
+  low:    { label: 'Leve (foto clara)',    color: 'bg-yellow-900 text-yellow-300' },
+  medium: { label: 'Médio (normal)',       color: 'bg-blue-900 text-blue-300'    },
+  high:   { label: 'Forte (foto escura)', color: 'bg-purple-900 text-purple-300' },
 }
 
 const PRESET_LABELS: Record<Preset, { label: string; icon: string; color: string }> = {
@@ -63,7 +73,11 @@ export default function TestFluxPage() {
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || 'Erro')
 
-      updateResult(file.name, { originalUrl: data.originalUrl })
+      updateResult(file.name, {
+        originalUrl: data.originalUrl,
+        luminance:   data.luminance,
+        intensity:   data.intensity,
+      })
 
       await pollPrediction(
         data.predictionId,
@@ -178,6 +192,17 @@ export default function TestFluxPage() {
                     <span className="text-red-400 text-sm">❌ Erro</span>
                   )}
                 </div>
+
+                {/* Luminância + intensidade */}
+                {r.luminance !== undefined && r.intensity && (
+                  <div className="flex items-center gap-2 text-sm">
+                    <span className="text-gray-500">Luminância:</span>
+                    <span className="font-mono font-bold">{r.luminance}</span>
+                    <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${INTENSITY_LABEL[r.intensity].color}`}>
+                      {INTENSITY_LABEL[r.intensity].label}
+                    </span>
+                  </div>
+                )}
 
                 {r.error && <p className="text-red-400 text-sm">{r.error}</p>}
 
