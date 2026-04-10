@@ -20,22 +20,26 @@ function getIntensity(luminance: number): Intensity {
 
 const INTENSITY_CONFIG: Record<Intensity, { value: number; brightnessInstruction: string }> = {
   low: {
-    value: 15,
+    value: 20,
     brightnessInstruction:
-      'The photo is already well-lit. DO NOT increase overall brightness. ' +
-      'Apply zero exposure gain. Focus exclusively on vibrancy, micro-contrast, and texture enhancement.',
+      'The photo is already well-lit. Do NOT increase overall brightness. ' +
+      'However, actively clean up any hazy, gray, or dull whites — push them to clean, pure white. ' +
+      'Enhance local contrast, micro-contrast, and vibrancy. Make the scene feel crisp and premium without changing exposure.',
   },
   medium: {
-    value: 30,
+    value: 35,
     brightnessInstruction:
-      'Apply a conservative brightness lift (Intensity Value: 30). ' +
-      'Gently open shadows. Avoid overexposing highlights. Preserve the original ambient light mood.',
+      'Apply a moderate brightness lift (Intensity Value: 35). ' +
+      'Clean up all whites — remove any gray or hazy cast and push them toward clean, bright white. ' +
+      'Open shadows gently. Protect highlights from blowing out. Enhance micro-contrast across all surfaces.',
   },
   high: {
-    value: 55,
+    value: 60,
     brightnessInstruction:
-      'Apply a significant brightness lift (Intensity Value: 55) to correct the underexposed image. ' +
-      'Fill shadows with natural light while carefully protecting all highlight details from blowing out.',
+      'Apply a strong brightness lift (Intensity Value: 60) to fully correct this underexposed image. ' +
+      'Push whites to clean, bright white — eliminate all gray haze and flatness. ' +
+      'Fill shadows with natural light. Significantly boost micro-contrast and texture. ' +
+      'Carefully protect highlights from clipping.',
   },
 }
 
