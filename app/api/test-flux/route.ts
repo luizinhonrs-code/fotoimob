@@ -20,26 +20,30 @@ function getIntensity(luminance: number): Intensity {
 
 const INTENSITY_CONFIG: Record<Intensity, { value: number; brightnessInstruction: string }> = {
   low: {
-    value: 20,
+    value: 10,
     brightnessInstruction:
-      'The photo is already well-lit. Do NOT increase overall brightness. ' +
-      'However, actively clean up any hazy, gray, or dull whites — push them to clean, pure white. ' +
-      'Enhance local contrast, micro-contrast, and vibrancy. Make the scene feel crisp and premium without changing exposure.',
+      'The photo is already well-lit. Do NOT increase brightness or exposure in any way. ' +
+      'Whites are already at the correct level — do not push them brighter or whiter. ' +
+      'Focus only on: subtle vibrancy boost on colors, gentle micro-contrast on textures (wood, fabric, floor). ' +
+      'The overall look must remain nearly identical to the original — only a light polish.',
   },
   medium: {
-    value: 35,
+    value: 25,
     brightnessInstruction:
-      'Apply a moderate brightness lift (Intensity Value: 35). ' +
-      'Clean up all whites — remove any gray or hazy cast and push them toward clean, bright white. ' +
-      'Open shadows gently. Protect highlights from blowing out. Enhance micro-contrast across all surfaces.',
+      'Apply a very conservative brightness lift (Intensity Value: 25) — barely noticeable. ' +
+      'Only gently open the deepest shadows. Do NOT overexpose whites or highlights. ' +
+      'Whites should look clean but must retain texture and not become featureless. ' +
+      'Remove subtle haze if present. Enhance micro-contrast on surfaces without blowing anything out.',
   },
   high: {
-    value: 60,
+    value: 50,
     brightnessInstruction:
-      'Apply a strong brightness lift (Intensity Value: 60) to fully correct this underexposed image. ' +
-      'Push whites to clean, bright white — eliminate all gray haze and flatness. ' +
-      'Fill shadows with natural light. Significantly boost micro-contrast and texture. ' +
-      'Carefully protect highlights from clipping.',
+      'Apply a meaningful brightness lift (Intensity Value: 50) to correct this underexposed image. ' +
+      'Brighten the scene naturally — as if opening window blinds to let in daylight. ' +
+      'CRITICAL: maintain absolute fidelity to every object, material, and color in the scene. ' +
+      'Do not invent, hallucinate, or alter any surface, texture, or element. ' +
+      'Whites should become clean and bright but must retain wall and fabric texture. ' +
+      'Protect all highlights from clipping. Open shadows gradually, not abruptly.',
   },
 }
 
