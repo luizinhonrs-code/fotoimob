@@ -17,36 +17,38 @@ function getIntensity(luminance: number): Intensity {
 
 // ── Anti-blowout — instrução comum a todos os prompts internos ──────────────
 const ANTI_BLOWOUT = `
-WINDOW & HIGHLIGHT PROTECTION (CRITICAL):
-Any area that is already bright or overexposed — especially window light, direct sunlight on curtains, bright ceiling lights, and white walls near light sources — must NOT be brightened further. These areas must be recovered or held at their current level. Do not amplify existing blown-out zones. If a window is already white and featureless, attempt to recover subtle detail (curtain texture, frame edge) rather than making it brighter. This rule overrides all other brightness instructions.`
+⚠️ WINDOW & HIGHLIGHT PROTECTION — HIGHEST PRIORITY RULE — OVERRIDES EVERYTHING:
+1. NEVER increase the brightness of any window area, glass door, or skylight under any circumstances.
+2. If a window area is already bright or blown out, you MUST darken it slightly to recover frame edges, glass texture, and a hint of the exterior. Do not leave windows as pure featureless white.
+3. Window frames (especially dark/black frames) must remain clearly visible and dark — do not bleach them white.
+4. Do NOT add, invent, or place curtains, blinds, shutters, or any window covering that does not exist in the original photo. This is absolutely forbidden.
+5. Bright ceiling lights and lamp fixtures must not be amplified — hold them at their current brightness or slightly reduce halos around them.
+6. This window and highlight protection rule takes absolute precedence over ALL brightness and exposure instructions below.`
 
 // ── Intensidades para fotos internas ────────────────────────────────────────
 const INTENSITY_CONFIG: Record<Intensity, { value: number; brightnessInstruction: string }> = {
   low: {
-    value: 10,
+    value: 8,
     brightnessInstruction:
-      'The photo is already well-lit. Do NOT increase brightness or exposure. ' +
-      'Focus only on: subtle vibrancy boost on existing colors, gentle micro-contrast on textures. ' +
-      'The overall look must remain nearly identical to the original — only a light polish.',
+      'The photo is already well-lit. Do NOT increase brightness or exposure anywhere. ' +
+      'Apply only: subtle vibrancy boost on colors, gentle micro-contrast on textures (wood, fabric, floor). ' +
+      'The result must look nearly identical to the original — a very light polish only.',
   },
   medium: {
-    value: 25,
+    value: 18,
     brightnessInstruction:
-      'Apply a very conservative brightness lift (Intensity Value: 25). ' +
-      'Only gently open the deepest shadows. Remove subtle haze if present. ' +
-      'Enhance micro-contrast on all surfaces. ' +
-      'Boost color vibrancy meaningfully — colors should feel rich and saturated, not flat. ' +
-      'Do NOT overexpose any area that is already lit.',
+      'Apply a minimal brightness lift (Intensity Value: 18) — only the darkest shadow areas. ' +
+      'Do NOT brighten walls, ceilings, or any mid-tone area. ' +
+      'Boost color vibrancy meaningfully — colors should feel rich and alive, not flat. ' +
+      'Remove subtle haze. Enhance micro-contrast on all textures.',
   },
   high: {
-    value: 50,
+    value: 38,
     brightnessInstruction:
-      'Apply a meaningful brightness lift (Intensity Value: 50) to correct this underexposed image. ' +
-      'Brighten naturally — as if opening window blinds to let in daylight. ' +
-      'CRITICAL: maintain absolute fidelity to every object, material, and color. ' +
-      'Do not invent or alter any surface, texture, or element. ' +
-      'Boost color vibrancy significantly — the scene should feel vivid and alive. ' +
-      'Protect all highlights. Open shadows gradually, not abruptly.',
+      'Apply a moderate brightness lift (Intensity Value: 38) to shadow and mid-tone areas only. ' +
+      'Brighten walls and floors naturally — do NOT touch already-bright areas. ' +
+      'Maintain absolute fidelity: do not invent, move, or alter any object, surface, or material. ' +
+      'Boost color vibrancy significantly. Open shadows gradually, never abruptly.',
   },
 }
 
@@ -67,12 +69,14 @@ function buildInteriorPrompt(style: 'vivido' | 'quente', intensity: Intensity): 
   return `Intensity Value: ${value}. Act as a surgical photo editor specializing in real estate architectural fidelity.
 
 ABSOLUTE PRESERVATION RULES — NON-NEGOTIABLE:
-- Do NOT add, remove, move, or change any object, furniture, or element.
-- Do NOT alter what is visible through windows. If night — keep night. If day — keep day.
+- Do NOT add, remove, move, or change any object, furniture, or element — not even small ones.
+- Do NOT add curtains, blinds, or any window covering that does not exist in the original.
+- Do NOT alter what is visible through windows. If night — keep night. If day — keep day. If blurred exterior — keep it blurred.
 - Do NOT change the color temperature direction of the scene.
-- Do NOT hallucinate or invent any detail in unclear areas.
+- Do NOT hallucinate or invent any detail in unclear or bright areas.
+- Do NOT deform counters, shelves, furniture edges, or architectural lines.
 - Do NOT smooth structural features, cracks, pipes, or construction elements.
-- Preserve the exact hue of all fabrics, furniture, and surfaces.
+- Preserve the exact hue and shape of all fabrics, furniture, and surfaces.
 - Text on signs, books, labels: do not alter or distort.
 ${ANTI_BLOWOUT}
 BRIGHTNESS & EXPOSURE:
