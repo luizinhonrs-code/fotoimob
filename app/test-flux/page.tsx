@@ -3,7 +3,7 @@
 import { useState, useCallback } from 'react'
 import { useDropzone } from 'react-dropzone'
 
-type Preset = 'vivido' | 'quente' | 'externo'
+type Preset = 'vivido' | 'quente'
 type Status = 'processing' | 'done' | 'error'
 
 type Intensity = 'low' | 'medium' | 'high'
@@ -26,9 +26,8 @@ const INTENSITY_LABEL: Record<Intensity, { label: string; color: string }> = {
 }
 
 const PRESET_LABELS: Record<Preset, { label: string; icon: string; color: string }> = {
-  vivido:  { label: 'Vívido',   icon: '✨', color: 'bg-blue-600 hover:bg-blue-500'   },
-  quente:  { label: 'Quente',   icon: '🔆', color: 'bg-amber-600 hover:bg-amber-500' },
-  externo: { label: 'Externo',  icon: '🏠', color: 'bg-green-700 hover:bg-green-600' },
+  vivido: { label: 'Vívido',  icon: '✨', color: 'bg-blue-600 hover:bg-blue-500'   },
+  quente: { label: 'Quente',  icon: '🔆', color: 'bg-amber-600 hover:bg-amber-500' },
 }
 
 async function pollPrediction(
