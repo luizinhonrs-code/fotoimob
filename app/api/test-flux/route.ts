@@ -74,13 +74,13 @@ export async function POST(request: NextRequest) {
     const prediction = await replicate.predictions.create({
       model: 'black-forest-labs/flux-2-klein-4b',
       input: {
-        image:          dataUri,
-        prompt:         PROMPTS[preset],
-        seed:           1734845908,
-        aspect_ratio:   'match_input_image',
-        megapixels:     '4',
-        output_format:  'jpg',
-        output_quality: 100,
+        images:            [dataUri],
+        prompt:            PROMPTS[preset],
+        seed:              1734845908,
+        aspect_ratio:      'match_input_image',
+        output_megapixels: '4',
+        output_format:     'jpg',
+        output_quality:    100,
       },
     })
 
