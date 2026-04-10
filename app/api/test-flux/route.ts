@@ -66,11 +66,15 @@ export async function POST(request: NextRequest) {
     const { data: urlData } = supabaseServer.storage.from('processed').getPublicUrl(storagePath)
     const originalUrl = urlData.publicUrl
 
+    // Converte para base64 data URI — Replicate não acessa URLs do Supabase diretamente
+    const mime = file.type || 'image/jpeg'
+    const dataUri = `data:${mime};base64,${Buffer.from(bytes).toString('base64')}`
+
     // Dispara FLUX (async)
     const prediction = await replicate.predictions.create({
       model: 'black-forest-labs/flux-2-klein-4b',
       input: {
-        image:          originalUrl,
+        image:          dataUri,
         prompt:         PROMPTS[preset],
         seed:           1734845908,
         aspect_ratio:   'match_input_image',
